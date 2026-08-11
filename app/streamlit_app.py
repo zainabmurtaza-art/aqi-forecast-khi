@@ -7,6 +7,14 @@ Deployed on Streamlit Community Cloud pointing at this same file, with
 HOPSWORKS_API_KEY set under the app's own Settings -> Secrets.
 """
 
+import sys
+from pathlib import Path
+
+# Streamlit Cloud runs this file with only its own directory (app/) on
+# sys.path, not the project root - add the root explicitly so config.py,
+# hopsworks_utils.py, feature_pipeline/, and training_pipeline/ are importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import streamlit as st
 
 import config
