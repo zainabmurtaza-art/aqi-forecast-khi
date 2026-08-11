@@ -3,7 +3,7 @@ pandas
 numpy
 python-dotenv
 joblib
-hopsworks
+hopsworks[python]
 scikit-learn
 matplotlib
 shap
