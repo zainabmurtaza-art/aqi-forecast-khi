@@ -34,6 +34,9 @@ def get_feature_group(feature_store=None):
         description=FEATURE_GROUP_DESCRIPTION,
         primary_key=_PRIMARY_KEY,
         event_time="event_time",
+        # Delta format needs an extra native library we don't install; Hudi is
+        # Hopsworks' other built-in option and needs nothing extra.
+        time_travel_format="HUDI",
     )
 
 
