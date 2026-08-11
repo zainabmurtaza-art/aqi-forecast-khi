@@ -20,11 +20,13 @@ import config
 
 def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["hour"] = df["event_time"].dt.hour
-    df["day"] = df["event_time"].dt.day
-    df["month"] = df["event_time"].dt.month
-    df["day_of_week"] = df["event_time"].dt.dayofweek
-    df["is_weekend"] = df["day_of_week"].isin([5, 6]).astype(int)
+    # pandas' .dt accessor yields int32; Hopsworks' declared schema expects
+    # int64 ("bigint"), so cast explicitly rather than relying on inference.
+    df["hour"] = df["event_time"].dt.hour.astype("int64")
+    df["day"] = df["event_time"].dt.day.astype("int64")
+    df["month"] = df["event_time"].dt.month.astype("int64")
+    df["day_of_week"] = df["event_time"].dt.dayofweek.astype("int64")
+    df["is_weekend"] = df["day_of_week"].isin([5, 6]).astype("int64")
     return df
 
 
