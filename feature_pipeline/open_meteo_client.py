@@ -75,6 +75,14 @@ def _fetch_hourly(
 
     df = pd.DataFrame(hourly)
     df["time"] = pd.to_datetime(df["time"], utc=True)
+
+    # Force a consistent float dtype for every value column. Without this,
+    # pandas infers int64 vs float64 depending on whether this particular
+    # batch happens to contain any whole numbers/NaNs, which then clashes
+    # with the Hopsworks feature group's schema (fixed from the first write).
+    for field in hourly_fields:
+        df[field] = df[field].astype(float)
+
     return df.rename(columns={"time": "event_time"})
 
 
