@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.streamlit/secrets.toml
+*.egg-info/
+.claude/
+*.pdf

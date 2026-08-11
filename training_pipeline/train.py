@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+"""
+Trains RandomForest and Ridge for each forecast horizon (t+1/t+2/t+3 day),
+evaluates both on a chronological hold-out split, and registers the
+lower-RMSE model per horizon to the Hopsworks Model Registry with its
+metrics attached.
+
+Run manually: python -m training_pipeline.train
+Run by CI: .github/workflows/daily_training_pipeline.yml (daily cron)
+"""
+
+import shutil
+import tempfile
+from pathlib import Path
+
+import joblib
+import pandas as pd
+
+import config
+from hopsworks_utils import get_model_registry
+from training_pipeline.build_dataset import (
+    build_training_data,
+    chronological_train_test_split,
+    target_column_name,
+)
+from training_pipeline.evaluate import evaluate
+from training_pipeline.models import MODEL_FACTORY
+
+
+def train_and_select_best(X_train, y_train, X_test, y_test):
+    """Trains every candidate model, returns (best_name, best_model, best_metrics, comparison_df)."""
+    results = []
+    fitted = {}
+
+    for name, build_model in MODEL_FACTORY.items():
+        model = build_model()
+        model.fit(X_train, y_train)
+        preds = model.predict(X_test)
+        metrics = evaluate(y_test, preds)
+        results.append({"model": name, **metrics})
+        fitted[name] = model
+
+    comparison = pd.DataFrame(results).sort_values("rmse")
+    best_name = comparison.iloc[0]["model"]
+    best_metrics = comparison.iloc[0].to_dict()
+    return best_name, fitted[best_name], best_metrics, comparison
+
+
+def register_model(model, model_name: str, metrics: dict):
+    registry = get_model_registry()
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    model_path = tmp_dir / "model.pkl"
+    joblib.dump(model, model_path)
+
+    hw_model = registry.python.create_model(
+        name=model_name,
+        metrics={"rmse": metrics["rmse"], "mae": metrics["mae"], "r2": metrics["r2"]},
+        description=f"AQI forecaster ({model_name}) for {config.CITY_NAME}.",
+        input_example=None,
+    )
+    hw_model.save(str(tmp_dir))
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return hw_model
+
+
+def run_training():
+    df = build_training_data()
+    print(f"Loaded {len(df)} feature rows with horizon targets attached.")
+
+    for horizon in config.FORECAST_HORIZONS_HOURS:
+        target_col = target_column_name(horizon)
+        X_train, y_train, X_test, y_test = chronological_train_test_split(df, target_col)
+
+        if len(X_train) < 10 or len(X_test) < 3:
+            print(
+                f"[{target_col}] Not enough rows yet ({len(X_train)} train / "
+                f"{len(X_test)} test) — skipping this horizon until more "
+                "history has been backfilled/collected."
+            )
+            continue
+
+        best_name, best_model, best_metrics, comparison = train_and_select_best(
+            X_train, y_train, X_test, y_test
+        )
+        print(f"\n[{target_col}] Model comparison:\n{comparison.to_string(index=False)}")
+        print(f"[{target_col}] Selected: {best_name} (RMSE={best_metrics['rmse']:.2f})")
+
+        registry_name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
+            city=config.CITY_NAME, horizon=horizon // 24
+        )
+        register_model(best_model, registry_name, best_metrics)
+        print(f"[{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
+
+
+if __name__ == "__main__":
+    run_training()
