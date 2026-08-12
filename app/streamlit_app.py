@@ -19,9 +19,36 @@ import streamlit as st
 
 import config
 from app.data_loader import get_horizon_predictions, load_models, load_recent_actual_features
-from app.ui_components import render_alert_banner, render_forecast_chart, render_shap_panel, render_trend_chart
+from app.ui_components import (
+    render_aqi_key,
+    render_alert_banner,
+    render_forecast_chart,
+    render_shap_panel,
+    render_trend_chart,
+)
 
 st.set_page_config(page_title="AQI Forecast — Pakistan", layout="wide")
+
+# Streamlit's selectbox is a searchable combobox that keeps text-input focus
+# after a selection, which otherwise leaves a blinking text cursor sitting in
+# the sidebar.
+st.markdown(
+    """
+    <style>
+    [data-testid="stSelectbox"] input {
+        caret-color: transparent !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+view = st.sidebar.radio("View", ["Forecast", "AQI Key"])
+
+if view == "AQI Key":
+    st.title("US AQI Color Key")
+    render_aqi_key()
+    st.stop()
 
 city_keys = list(config.CITIES.keys())
 default_city = config.CITY_NAME if config.CITY_NAME in config.CITIES else city_keys[0]

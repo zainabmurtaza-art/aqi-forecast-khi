@@ -23,6 +23,31 @@ def _aqi_category(aqi_value: float) -> tuple:
     return "Acceptable", "#2e7d32"
 
 
+AQI_KEY_RANGES = [
+    (0, 50, "Good", "#2e7d32"),
+    (51, 100, "Moderate", "#f9a825"),
+    (101, 150, "Unhealthy for Sensitive Groups", "#ef6c00"),
+    (151, 200, "Unhealthy", "#d32f2f"),
+    (201, 300, "Very Unhealthy", "#8e24aa"),
+    (301, 500, "Hazardous", "#7e0023"),
+]
+
+
+def render_aqi_key():
+    """Static US AQI color/range legend, shown instead of the forecast charts
+    when the sidebar is set to the 'AQI Key' view."""
+    for lo, hi, label, color in AQI_KEY_RANGES:
+        st.markdown(
+            f"""
+            <div style="background-color:{color}; padding:1rem; border-radius:0.5rem;
+                        color:white; margin-bottom:0.5rem;">
+                <strong>{lo}-{hi}: {label}</strong>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
     worst_aqi = max(current_aqi, predictions["predicted_us_aqi"].max())
     label, color = _aqi_category(worst_aqi)
