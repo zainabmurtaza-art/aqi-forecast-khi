@@ -54,7 +54,7 @@ def train_and_select_best(X_train, y_train, X_test, y_test):
     return best_name, fitted[best_name], best_metrics, comparison
 
 
-def register_model(model, model_name: str, metrics: dict, city: str):
+def register_model(model, registry_name: str, metrics: dict, city: str):
     registry = get_model_registry()
 
     tmp_dir = Path(tempfile.mkdtemp())
@@ -62,9 +62,9 @@ def register_model(model, model_name: str, metrics: dict, city: str):
     joblib.dump(model, model_path)
 
     hw_model = registry.python.create_model(
-        name=model_name,
+        name=registry_name,
         metrics={"rmse": metrics["rmse"], "mae": metrics["mae"], "r2": metrics["r2"]},
-        description=f"AQI forecaster ({model_name}) for {city}.",
+        description=f"AQI forecaster for {city} — winning algorithm: {metrics['model']}.",
         input_example=None,
     )
     hw_model.save(str(tmp_dir))
