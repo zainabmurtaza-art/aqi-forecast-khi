@@ -5,6 +5,7 @@ python-dotenv
 joblib
 hopsworks[python]
 scikit-learn
+xgboost
 matplotlib
 shap
 streamlit
