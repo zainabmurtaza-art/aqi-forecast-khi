@@ -8,6 +8,8 @@ import streamlit as st
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
+from xgboost import XGBRegressor
+
 import config
 from training_pipeline.build_dataset import FEATURE_COLUMNS
 
@@ -60,7 +62,7 @@ def render_shap_panel(model, feature_row: pd.DataFrame, horizon_days: int):
     st.subheader(f"Why this +{horizon_days}-day prediction (SHAP)")
 
     X = feature_row[FEATURE_COLUMNS]
-    if isinstance(model, RandomForestRegressor):
+    if isinstance(model, (RandomForestRegressor, XGBRegressor)):
         explainer = shap.TreeExplainer(model)
     elif isinstance(model, Ridge):
         explainer = shap.LinearExplainer(model, X)

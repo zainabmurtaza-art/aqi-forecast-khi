@@ -16,10 +16,12 @@ Run by CI: .github/workflows/daily_training_pipeline.yml (daily cron)
 
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import joblib
 import pandas as pd
+import requests
 
 import config
 from hopsworks_utils import get_model_registry
@@ -33,6 +35,26 @@ from training_pipeline.models import MODEL_FACTORY
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 SUMMARY_CSV_PATH = OUTPUT_DIR / "training_summary.csv"
+
+# Each register_model() call re-logs-in to Hopsworks (get_model_registry()
+# with no cached project) and does several HTTP round trips to upload +
+# register a model; a single transient reset anywhere in that chain
+# shouldn't fail the whole run when the equivalent Open-Meteo calls already
+# tolerate the same kind of blip via urllib3 retries.
+_RETRYABLE_EXCEPTIONS = (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError)
+
+
+def _retry_transient(fn, retries=3, backoff_seconds=5):
+    for attempt in range(1, retries + 1):
+        try:
+            return fn()
+        except _RETRYABLE_EXCEPTIONS as exc:
+            if attempt == retries:
+                raise
+            print(f"Transient error on attempt {attempt}/{retries}: {exc}. "
+                  f"Retrying in {backoff_seconds}s...")
+            time.sleep(backoff_seconds)
+            backoff_seconds *= 2
 
 
 def train_and_select_best(X_train, y_train, X_test, y_test):
@@ -55,21 +77,27 @@ def train_and_select_best(X_train, y_train, X_test, y_test):
 
 
 def register_model(model, registry_name: str, metrics: dict, city: str):
-    registry = get_model_registry()
+    def _attempt():
+        registry = get_model_registry()
 
-    tmp_dir = Path(tempfile.mkdtemp())
-    model_path = tmp_dir / "model.pkl"
-    joblib.dump(model, model_path)
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            joblib.dump(model, tmp_dir / "model.pkl")
+            hw_model = registry.python.create_model(
+                name=registry_name,
+                metrics={"rmse": metrics["rmse"], "mae": metrics["mae"], "r2": metrics["r2"]},
+                description=f"AQI forecaster for {city} — winning algorithm: {metrics['model']}.",
+                input_example=None,
+            )
+            hw_model.save(str(tmp_dir))
+            return hw_model
+        finally:
+            # hw_model.save() moves files out of tmp_dir on success, but a
+            # failed attempt may leave it non-empty - always start the next
+            # retry from a clean directory.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    hw_model = registry.python.create_model(
-        name=registry_name,
-        metrics={"rmse": metrics["rmse"], "mae": metrics["mae"], "r2": metrics["r2"]},
-        description=f"AQI forecaster for {city} — winning algorithm: {metrics['model']}.",
-        input_example=None,
-    )
-    hw_model.save(str(tmp_dir))
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    return hw_model
+    return _retry_transient(_attempt)
 
 
 def run_training():
