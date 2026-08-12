@@ -6,6 +6,14 @@ bulk-insert into the Hopsworks Feature Group. Run this once to seed a real
 training dataset, and again any time a larger history window is wanted
 (inserts are upserts on the (city, event_time) primary key, so re-running
 is safe).
+
+Weather history comes from Open-Meteo's ERA5 archive, which serves years of
+real data, but air-quality history (a separate CAMS-based endpoint) only has
+real coverage from ~2022-09 onward for cities in this project - a backfill
+window reaching further back than that just yields extra rows with a null
+target, which the training pipeline already drops. MAX_BACKFILL_DAYS below
+is a sanity ceiling against a typo (e.g. an accidental extra digit in
+AQI_BACKFILL_DAYS), not a real API limit.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -13,17 +21,17 @@ from typing import Iterable, Optional
 
 import config
 from feature_pipeline.feature_engineering import engineer_features
-from feature_pipeline.open_meteo_client import MAX_WEATHER_HISTORY_DAYS, fetch_combined
+from feature_pipeline.open_meteo_client import fetch_combined
 from hopsworks_utils import get_feature_group
+
+MAX_BACKFILL_DAYS = 1825  # 5 years
 
 
 def run_backfill(days: int = config.BACKFILL_DAYS, cities: Optional[Iterable[str]] = None) -> int:
-    if days > MAX_WEATHER_HISTORY_DAYS:
+    if days > MAX_BACKFILL_DAYS:
         raise ValueError(
-            f"AQI_BACKFILL_DAYS={days} exceeds the ~{MAX_WEATHER_HISTORY_DAYS}-day "
-            "history window Open-Meteo's forecast API serves for weather data. "
-            "Lower it, or switch fetch_weather() to archive-api.open-meteo.com "
-            "for a longer backfill."
+            f"AQI_BACKFILL_DAYS={days} exceeds the {MAX_BACKFILL_DAYS}-day sanity ceiling. "
+            "If you really want more than 5 years of history, raise MAX_BACKFILL_DAYS."
         )
 
     cities = list(cities) if cities is not None else list(config.CITIES)

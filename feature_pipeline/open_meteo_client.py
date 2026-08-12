@@ -7,6 +7,16 @@ Both Open-Meteo APIs accept the same start_date/end_date windowing, so a
 single date range can be requested per call. Pass a past start_date for
 history, or leave start_date unset and pass forecast_days for a forecast
 that starts today.
+
+Weather history uses two different endpoints depending on the request:
+WEATHER_URL (the forecast endpoint) only serves ~92 days of past data, so
+any start_date/end_date range instead goes to WEATHER_ARCHIVE_URL, the
+ERA5-based reanalysis archive - confirmed by hand to return real (non-null)
+data back to 2015 with no gap up to the current hour, unlike a forecast
+endpoint's history window. AIR_QUALITY_URL, by contrast, already serves its
+own full history directly (confirmed real CAMS coverage from ~2022-09
+onward; NaN before that, which the training pipeline already drops), so it
+doesn't need a separate archive endpoint.
 """
 
 from typing import Optional
@@ -20,19 +30,13 @@ import config
 
 AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+WEATHER_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 # A 10-city loop makes 20 requests back to back; retry transient network
 # blips/5xx instead of letting one slow response kill the whole run.
 _session = requests.Session()
 _retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 _session.mount("https://", HTTPAdapter(max_retries=_retry))
-
-# WEATHER_URL only serves ~92 days of past data (it's the forecast endpoint's
-# recent-history window, not a full archive) - a start_date further back than
-# that returns HTTP 400. config.BACKFILL_DAYS must stay under this ceiling;
-# a longer backfill would need the separate archive-api.open-meteo.com/v1/archive
-# endpoint instead.
-MAX_WEATHER_HISTORY_DAYS = 90
 
 AIR_QUALITY_HOURLY_FIELDS = [
     "pm10",
@@ -121,10 +125,13 @@ def fetch_weather(
     forecast_days: Optional[int] = None,
     city: str = config.CITY_NAME,
 ) -> pd.DataFrame:
-    """Hourly temperature/humidity/pressure/wind for either a date range or forecast_days ahead."""
+    """Hourly temperature/humidity/pressure/wind for either a date range or forecast_days ahead.
+    A date range uses the archive/reanalysis endpoint (years of history); forecast_days
+    uses the forecast endpoint, which archive-api doesn't serve."""
     coords = config.CITIES[city]
+    url = WEATHER_ARCHIVE_URL if (start_date and end_date) else WEATHER_URL
     return _fetch_hourly(
-        WEATHER_URL,
+        url,
         WEATHER_HOURLY_FIELDS,
         coords["lat"],
         coords["lon"],
