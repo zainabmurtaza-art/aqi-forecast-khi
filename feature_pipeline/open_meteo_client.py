@@ -32,10 +32,13 @@ AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
-# A 10-city loop makes 20 requests back to back; retry transient network
-# blips/5xx instead of letting one slow response kill the whole run.
+# A 10-city loop makes 20 requests back to back, and the dashboard adds its
+# own bursts on top (every city switch is a cache miss on first view); retry
+# transient network blips/5xx and rate limiting (429) instead of failing
+# immediately. urllib3 honors a Retry-After header if Open-Meteo sends one,
+# otherwise backoff_factor gives ~1s/2s/4s between the 3 attempts.
 _session = requests.Session()
-_retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+_retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 _session.mount("https://", HTTPAdapter(max_retries=_retry))
 
 AIR_QUALITY_HOURLY_FIELDS = [
