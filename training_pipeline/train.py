@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Trains RandomForest and Ridge for each forecast horizon (t+1/t+2/t+3 day),
+Trains RandomForest and Ridge for each (city, forecast horizon) pair,
 evaluates both on a chronological hold-out split, and registers the
-lower-RMSE model per horizon to the Hopsworks Model Registry with its
+lower-RMSE model per city/horizon to the Hopsworks Model Registry with its
 metrics attached.
 
 Run manually: python -m training_pipeline.train
@@ -46,7 +46,7 @@ def train_and_select_best(X_train, y_train, X_test, y_test):
     return best_name, fitted[best_name], best_metrics, comparison
 
 
-def register_model(model, model_name: str, metrics: dict):
+def register_model(model, model_name: str, metrics: dict, city: str):
     registry = get_model_registry()
 
     tmp_dir = Path(tempfile.mkdtemp())
@@ -56,7 +56,7 @@ def register_model(model, model_name: str, metrics: dict):
     hw_model = registry.python.create_model(
         name=model_name,
         metrics={"rmse": metrics["rmse"], "mae": metrics["mae"], "r2": metrics["r2"]},
-        description=f"AQI forecaster ({model_name}) for {config.CITY_NAME}.",
+        description=f"AQI forecaster ({model_name}) for {city}.",
         input_example=None,
     )
     hw_model.save(str(tmp_dir))
@@ -66,31 +66,35 @@ def register_model(model, model_name: str, metrics: dict):
 
 def run_training():
     df = build_training_data()
-    print(f"Loaded {len(df)} feature rows with horizon targets attached.")
+    print(f"Loaded {len(df)} feature rows with horizon targets attached "
+          f"across {df['city'].nunique()} cities.")
 
-    for horizon in config.FORECAST_HORIZONS_HOURS:
-        target_col = target_column_name(horizon)
-        X_train, y_train, X_test, y_test = chronological_train_test_split(df, target_col)
-
-        if len(X_train) < 10 or len(X_test) < 3:
-            print(
-                f"[{target_col}] Not enough rows yet ({len(X_train)} train / "
-                f"{len(X_test)} test) — skipping this horizon until more "
-                "history has been backfilled/collected."
+    for city in config.CITIES:
+        for horizon in config.FORECAST_HORIZONS_HOURS:
+            target_col = target_column_name(horizon)
+            X_train, y_train, X_test, y_test = chronological_train_test_split(
+                df, target_col, city
             )
-            continue
 
-        best_name, best_model, best_metrics, comparison = train_and_select_best(
-            X_train, y_train, X_test, y_test
-        )
-        print(f"\n[{target_col}] Model comparison:\n{comparison.to_string(index=False)}")
-        print(f"[{target_col}] Selected: {best_name} (RMSE={best_metrics['rmse']:.2f})")
+            if len(X_train) < 10 or len(X_test) < 3:
+                print(
+                    f"[{city}/{target_col}] Not enough rows yet ({len(X_train)} train / "
+                    f"{len(X_test)} test) — skipping this horizon until more "
+                    "history has been backfilled/collected."
+                )
+                continue
 
-        registry_name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
-            city=config.CITY_NAME, horizon=horizon // 24
-        )
-        register_model(best_model, registry_name, best_metrics)
-        print(f"[{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
+            best_name, best_model, best_metrics, comparison = train_and_select_best(
+                X_train, y_train, X_test, y_test
+            )
+            print(f"\n[{city}/{target_col}] Model comparison:\n{comparison.to_string(index=False)}")
+            print(f"[{city}/{target_col}] Selected: {best_name} (RMSE={best_metrics['rmse']:.2f})")
+
+            registry_name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
+                city=city, horizon=horizon // 24
+            )
+            register_model(best_model, registry_name, best_metrics, city)
+            print(f"[{city}/{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
 
 
 if __name__ == "__main__":

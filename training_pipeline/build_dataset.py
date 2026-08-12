@@ -62,9 +62,14 @@ def add_horizon_targets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def chronological_train_test_split(df: pd.DataFrame, target_col: str, test_frac: float = 0.2):
-    """Drops rows missing any feature or the target, then splits by time order."""
-    usable = df.dropna(subset=FEATURE_COLUMNS + [target_col]).reset_index(drop=True)
+def chronological_train_test_split(
+    df: pd.DataFrame, target_col: str, city: str, test_frac: float = 0.2
+):
+    """Filters to one city, drops rows missing any feature or the target, then
+    splits by time order. Filtering by city matters because a model is trained
+    per (city, horizon) pair — mixing cities would blend unrelated series."""
+    city_df = df[df["city"] == city]
+    usable = city_df.dropna(subset=FEATURE_COLUMNS + [target_col]).reset_index(drop=True)
 
     split_idx = int(len(usable) * (1 - test_frac))
     train_df = usable.iloc[:split_idx]

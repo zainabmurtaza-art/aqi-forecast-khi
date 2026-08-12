@@ -42,15 +42,13 @@ def get_project():
 
 
 @st.cache_resource
-def load_models() -> dict:
-    """Returns {horizon_hours: fitted sklearn model} for each configured horizon."""
+def load_models(city: str) -> dict:
+    """Returns {horizon_hours: fitted sklearn model} for each configured horizon, for one city."""
     registry = hopsworks_utils.get_model_registry(get_project())
     models = {}
 
     for horizon in config.FORECAST_HORIZONS_HOURS:
-        name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
-            city=config.CITY_NAME, horizon=horizon // 24
-        )
+        name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(city=city, horizon=horizon // 24)
         hw_model = registry.get_best_model(name, "rmse", "min")
         model_dir = hw_model.download()
         models[horizon] = joblib.load(Path(model_dir) / "model.pkl")
@@ -59,31 +57,34 @@ def load_models() -> dict:
 
 
 @st.cache_data(ttl=3600)
-def load_recent_actual_features(lookback_days: int = LOOKBACK_DAYS_FOR_TREND) -> pd.DataFrame:
-    """Latest stored feature rows from Hopsworks, used for the trend chart and as
-    inference context (their raw columns get stitched onto the forecast window)."""
+def load_recent_actual_features(
+    city: str, lookback_days: int = LOOKBACK_DAYS_FOR_TREND
+) -> pd.DataFrame:
+    """Latest stored feature rows from Hopsworks for one city, used for the trend
+    chart and as inference context (their raw columns get stitched onto the
+    forecast window)."""
     fg = hopsworks_utils.get_feature_group()
     df = fg.read()
     df["event_time"] = pd.to_datetime(df["event_time"], utc=True)
-    df = df[df["city"] == config.CITY_NAME].sort_values("event_time")
+    df = df[df["city"] == city].sort_values("event_time")
 
     cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
     return df[df["event_time"] >= cutoff].reset_index(drop=True)
 
 
 @st.cache_data(ttl=3600)
-def load_forecast_raw() -> pd.DataFrame:
+def load_forecast_raw(city: str) -> pd.DataFrame:
     forecast_days = max(config.FORECAST_HORIZONS_HOURS) // 24 + 1
-    return fetch_combined(forecast_days=forecast_days)
+    return fetch_combined(forecast_days=forecast_days, city=city)
 
 
-def build_inference_dataset() -> pd.DataFrame:
+def build_inference_dataset(city: str) -> pd.DataFrame:
     """Stitches recent actual rows + forecast rows into one continuous hourly
     series, then re-runs feature_engineering so derived features (lags,
     rolling means, change rate) are computed consistently across the
     actual/forecast boundary — the same transform used at training time."""
-    actual_raw = load_recent_actual_features()[RAW_COLUMNS]
-    forecast_raw = load_forecast_raw()[RAW_COLUMNS]
+    actual_raw = load_recent_actual_features(city)[RAW_COLUMNS]
+    forecast_raw = load_forecast_raw(city)[RAW_COLUMNS]
 
     combined = (
         pd.concat([actual_raw, forecast_raw], ignore_index=True)
@@ -93,8 +94,8 @@ def build_inference_dataset() -> pd.DataFrame:
     return engineer_features(combined)
 
 
-def get_horizon_predictions(models: dict) -> pd.DataFrame:
-    engineered = build_inference_dataset()
+def get_horizon_predictions(models: dict, city: str) -> pd.DataFrame:
+    engineered = build_inference_dataset(city)
     now = pd.Timestamp.now(tz="UTC").floor("h")
 
     rows = []

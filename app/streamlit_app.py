@@ -21,17 +21,38 @@ import config
 from app.data_loader import get_horizon_predictions, load_models, load_recent_actual_features
 from app.ui_components import render_alert_banner, render_forecast_chart, render_shap_panel, render_trend_chart
 
-st.set_page_config(page_title=f"AQI Forecast — {config.CITY_NAME.title()}", layout="wide")
-st.title(f"Air Quality Forecast — {config.CITY_NAME.title()}")
+st.set_page_config(page_title="AQI Forecast — Pakistan", layout="wide")
 
-with st.spinner("Loading models and latest data..."):
-    models = load_models()
-    actual_df = load_recent_actual_features()
-    predictions = get_horizon_predictions(models)
+city_keys = list(config.CITIES.keys())
+default_city = config.CITY_NAME if config.CITY_NAME in config.CITIES else city_keys[0]
+
+selected_city = st.sidebar.selectbox(
+    "City",
+    options=city_keys,
+    format_func=lambda c: config.CITIES[c]["label"],
+    index=city_keys.index(default_city),
+)
+city_label = config.CITIES[selected_city]["label"]
+
+st.title(f"Air Quality Forecast — {city_label}")
+
+with st.spinner(f"Loading models and latest data for {city_label}..."):
+    try:
+        models = load_models(selected_city)
+    except Exception:
+        st.error(
+            f"No trained models found in Hopsworks yet for {city_label}. Run "
+            "`python -m feature_pipeline.backfill_pipeline` and "
+            "`python -m training_pipeline.train` first."
+        )
+        st.stop()
+
+    actual_df = load_recent_actual_features(selected_city)
+    predictions = get_horizon_predictions(models, selected_city)
 
 if actual_df.empty:
     st.error(
-        "No feature data found in Hopsworks yet. Run "
+        f"No feature data found in Hopsworks yet for {city_label}. Run "
         "`python -m feature_pipeline.backfill_pipeline` first."
     )
     st.stop()

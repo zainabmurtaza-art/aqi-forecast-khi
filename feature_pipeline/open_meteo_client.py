@@ -47,13 +47,15 @@ WEATHER_HOURLY_FIELDS = [
 def _fetch_hourly(
     url: str,
     hourly_fields: list,
+    latitude: float,
+    longitude: float,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     forecast_days: Optional[int] = None,
 ) -> pd.DataFrame:
     params = {
-        "latitude": config.LATITUDE,
-        "longitude": config.LONGITUDE,
+        "latitude": latitude,
+        "longitude": longitude,
         "hourly": ",".join(hourly_fields),
         "timezone": "UTC",
     }
@@ -90,10 +92,18 @@ def fetch_air_quality(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     forecast_days: Optional[int] = None,
+    city: str = config.CITY_NAME,
 ) -> pd.DataFrame:
     """Hourly pm10/pm2_5/co/no2/so2/o3/us_aqi for either a date range or forecast_days ahead."""
+    coords = config.CITIES[city]
     return _fetch_hourly(
-        AIR_QUALITY_URL, AIR_QUALITY_HOURLY_FIELDS, start_date, end_date, forecast_days
+        AIR_QUALITY_URL,
+        AIR_QUALITY_HOURLY_FIELDS,
+        coords["lat"],
+        coords["lon"],
+        start_date,
+        end_date,
+        forecast_days,
     )
 
 
@@ -101,10 +111,18 @@ def fetch_weather(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     forecast_days: Optional[int] = None,
+    city: str = config.CITY_NAME,
 ) -> pd.DataFrame:
     """Hourly temperature/humidity/pressure/wind for either a date range or forecast_days ahead."""
+    coords = config.CITIES[city]
     return _fetch_hourly(
-        WEATHER_URL, WEATHER_HOURLY_FIELDS, start_date, end_date, forecast_days
+        WEATHER_URL,
+        WEATHER_HOURLY_FIELDS,
+        coords["lat"],
+        coords["lon"],
+        start_date,
+        end_date,
+        forecast_days,
     )
 
 
@@ -112,13 +130,14 @@ def fetch_combined(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     forecast_days: Optional[int] = None,
+    city: str = config.CITY_NAME,
 ) -> pd.DataFrame:
     """Air quality + weather merged on event_time, with the city column added."""
-    air = fetch_air_quality(start_date, end_date, forecast_days)
-    weather = fetch_weather(start_date, end_date, forecast_days)
+    air = fetch_air_quality(start_date, end_date, forecast_days, city)
+    weather = fetch_weather(start_date, end_date, forecast_days, city)
 
     merged = air.merge(weather, on="event_time", how="inner")
-    merged.insert(0, "city", config.CITY_NAME)
+    merged.insert(0, "city", city)
     return merged
 
 

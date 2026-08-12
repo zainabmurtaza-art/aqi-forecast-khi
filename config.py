@@ -14,9 +14,29 @@ load_dotenv()
 
 # --- Location -----------------------------------------------------------
 
+# All cities the pipelines/dashboard support. Keys double as the "city"
+# primary-key value in the feature group and as the {city} slot in
+# MODEL_REGISTRY_NAME_TEMPLATE, so keep them stable once data has been
+# backfilled under them.
+CITIES = {
+    "karachi": {"label": "Karachi", "lat": 24.8607, "lon": 67.0011},
+    "lahore": {"label": "Lahore", "lat": 31.5497, "lon": 74.3436},
+    "islamabad": {"label": "Islamabad", "lat": 33.6844, "lon": 73.0479},
+    "faisalabad": {"label": "Faisalabad", "lat": 31.4504, "lon": 73.1350},
+    "multan": {"label": "Multan", "lat": 30.1575, "lon": 71.5249},
+    "peshawar": {"label": "Peshawar", "lat": 34.0151, "lon": 71.5805},
+    "quetta": {"label": "Quetta", "lat": 30.1798, "lon": 66.9750},
+    "hyderabad": {"label": "Hyderabad", "lat": 25.3960, "lon": 68.3578},
+    "abbottabad": {"label": "Abbottabad", "lat": 34.1463, "lon": 73.2117},
+    "sukkur": {"label": "Sukkur", "lat": 27.7052, "lon": 68.8574},
+}
+
+# Single-city default, kept for scripts/back-compat (e.g. AQICN's one-city
+# live reading). Multi-city jobs iterate config.CITIES directly instead.
 CITY_NAME = os.getenv("AQI_CITY", "karachi")
-LATITUDE = float(os.getenv("AQI_LAT", "24.8607"))
-LONGITUDE = float(os.getenv("AQI_LON", "67.0011"))
+_default_coords = CITIES.get(CITY_NAME, CITIES["karachi"])
+LATITUDE = float(os.getenv("AQI_LAT", _default_coords["lat"]))
+LONGITUDE = float(os.getenv("AQI_LON", _default_coords["lon"]))
 TIMEZONE = os.getenv("AQI_TIMEZONE", "Asia/Karachi")
 
 # --- Hopsworks ------------------------------------------------------------
