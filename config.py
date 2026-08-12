@@ -59,7 +59,11 @@ FORECAST_HORIZONS_HOURS = [24, 48, 72]  # t+1 day, t+2 day, t+3 day
 
 # --- Backfill ---------------------------------------------------------------
 
-BACKFILL_DAYS = int(os.getenv("AQI_BACKFILL_DAYS", "90"))
+# Weather history now comes from Open-Meteo's archive (ERA5) endpoint, which
+# serves years of data; air-quality history has real (non-null) coverage
+# from ~2022-09 onward. 365 days gives training a full seasonal cycle
+# without reaching into the null-heavy pre-2022-09 range.
+BACKFILL_DAYS = int(os.getenv("AQI_BACKFILL_DAYS", "365"))
 
 # --- Feature engineering windows ---------------------------------------------
 
