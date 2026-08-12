@@ -23,3 +23,11 @@ jobs:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
           HOPSWORKS_PROJECT_NAME: ${{ secrets.HOPSWORKS_PROJECT_NAME }}
         run: python -m training_pipeline.train
+
+      - name: Upload model comparison summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-summary
+          path: outputs/training_summary.csv
+          if-no-files-found: warn
