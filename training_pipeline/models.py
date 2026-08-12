@@ -9,12 +9,25 @@ from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
 
 MODEL_FACTORY = {
+    # max_depth was 12 with no leaf-size floor - on ~90 days of history per
+    # city that memorizes training noise and produces negative test R2. Capped
+    # depth + a minimum leaf size trades train-set fit for held-out generalization.
     "random_forest": lambda: RandomForestRegressor(
-        n_estimators=200, max_depth=12, random_state=42, n_jobs=-1
+        n_estimators=200, max_depth=6, min_samples_leaf=5, random_state=42, n_jobs=-1
     ),
     "ridge": lambda: Ridge(alpha=1.0),
+    # subsample/colsample_bytree add row/column randomness per tree (same
+    # overfitting-control idea as RandomForest's bagging); reg_lambda adds
+    # L2 shrinkage on leaf weights.
     "xgboost": lambda: XGBRegressor(
-        n_estimators=200, max_depth=6, learning_rate=0.1, random_state=42, n_jobs=-1
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=2.0,
+        random_state=42,
+        n_jobs=-1,
     ),
 }
 

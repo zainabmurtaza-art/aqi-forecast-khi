@@ -78,39 +78,53 @@ def run_training():
           f"across {df['city'].nunique()} cities.")
 
     all_comparisons = []
+    failed = []
 
     for city in config.CITIES:
+        city_row_count = int((df["city"] == city).sum())
+        if city_row_count == 0:
+            print(f"[{city}] 0 rows in the feature group — run "
+                  "feature_pipeline.backfill_pipeline for this city first. Skipping.")
+            continue
+
         for horizon in config.FORECAST_HORIZONS_HOURS:
             target_col = target_column_name(horizon)
-            X_train, y_train, X_test, y_test = chronological_train_test_split(
-                df, target_col, city
-            )
-
-            if len(X_train) < 10 or len(X_test) < 3:
-                print(
-                    f"[{city}/{target_col}] Not enough rows yet ({len(X_train)} train / "
-                    f"{len(X_test)} test) — skipping this horizon until more "
-                    "history has been backfilled/collected."
+            try:
+                X_train, y_train, X_test, y_test = chronological_train_test_split(
+                    df, target_col, city
                 )
-                continue
 
-            best_name, best_model, best_metrics, comparison = train_and_select_best(
-                X_train, y_train, X_test, y_test
-            )
-            print(f"\n[{city}/{target_col}] Model comparison:\n{comparison.to_string(index=False)}")
-            print(f"[{city}/{target_col}] Selected: {best_name} (RMSE={best_metrics['rmse']:.2f})")
+                if len(X_train) < 10 or len(X_test) < 3:
+                    print(
+                        f"[{city}/{target_col}] {city_row_count} raw rows but only "
+                        f"{len(X_train)} train / {len(X_test)} test usable after dropping "
+                        "rows with missing lag/rolling features or target — skipping this "
+                        "horizon until more history has been backfilled/collected."
+                    )
+                    continue
 
-            comparison = comparison.copy()
-            comparison.insert(0, "city", city)
-            comparison.insert(1, "horizon_days", horizon // 24)
-            comparison["selected"] = comparison["model"] == best_name
-            all_comparisons.append(comparison)
+                best_name, best_model, best_metrics, comparison = train_and_select_best(
+                    X_train, y_train, X_test, y_test
+                )
+                print(f"\n[{city}/{target_col}] Model comparison:\n{comparison.to_string(index=False)}")
+                print(f"[{city}/{target_col}] Selected: {best_name} (RMSE={best_metrics['rmse']:.2f})")
 
-            registry_name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
-                city=city, horizon=horizon // 24
-            )
-            register_model(best_model, registry_name, best_metrics, city)
-            print(f"[{city}/{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
+                comparison = comparison.copy()
+                comparison.insert(0, "city", city)
+                comparison.insert(1, "horizon_days", horizon // 24)
+                comparison["selected"] = comparison["model"] == best_name
+                all_comparisons.append(comparison)
+
+                registry_name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(
+                    city=city, horizon=horizon // 24
+                )
+                register_model(best_model, registry_name, best_metrics, city)
+                print(f"[{city}/{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
+            except Exception as exc:
+                # Don't let one bad (city, horizon) pair abort the whole run and
+                # lose every other city's results along with it.
+                print(f"[{city}/{target_col}] Training failed, skipping: {exc}")
+                failed.append(f"{city}/{target_col}")
 
     if all_comparisons:
         summary = pd.concat(all_comparisons, ignore_index=True)
@@ -121,6 +135,9 @@ def run_training():
         print(f"\nWrote comparison summary to {SUMMARY_CSV_PATH}")
     else:
         print("\nNo city/horizon had enough rows to train on this run.")
+
+    if failed:
+        raise RuntimeError(f"Training failed for: {', '.join(failed)}.")
 
 
 if __name__ == "__main__":
