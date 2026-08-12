@@ -33,22 +33,31 @@ def run_hourly_update(rows_to_insert: int = 1, cities: Optional[Iterable[str]] =
 
     fg = get_feature_group()
     total_rows = 0
+    failed_cities = []
     for city in cities:
-        raw = fetch_combined(start_date=str(start_date), end_date=str(end_date), city=city)
-        features = engineer_features(raw)
+        try:
+            raw = fetch_combined(start_date=str(start_date), end_date=str(end_date), city=city)
+            features = engineer_features(raw)
 
-        completed_hours = features[features["event_time"] <= now]
-        if completed_hours.empty:
-            print(f"[{city}] No completed hourly rows available yet from Open-Meteo; skipping.")
-            continue
+            completed_hours = features[features["event_time"] <= now]
+            if completed_hours.empty:
+                print(f"[{city}] No completed hourly rows available yet from Open-Meteo; skipping.")
+                continue
 
-        newest_rows = completed_hours.tail(rows_to_insert)
-        fg.insert(newest_rows)
-        print(f"[{city}] Upserted {len(newest_rows)} row(s) up to "
-              f"{newest_rows['event_time'].max()} into "
-              f"'{config.FEATURE_GROUP_NAME}' (v{config.FEATURE_GROUP_VERSION}).")
-        total_rows += len(newest_rows)
+            newest_rows = completed_hours.tail(rows_to_insert)
+            fg.insert(newest_rows)
+            print(f"[{city}] Upserted {len(newest_rows)} row(s) up to "
+                  f"{newest_rows['event_time'].max()} into "
+                  f"'{config.FEATURE_GROUP_NAME}' (v{config.FEATURE_GROUP_VERSION}).")
+            total_rows += len(newest_rows)
+        except Exception as exc:
+            # Upserts are safe to retry; don't let one city's failure skip the
+            # rest, since this runs unattended every hour for all cities.
+            print(f"[{city}] Hourly update failed, skipping: {exc}")
+            failed_cities.append(city)
 
+    if failed_cities:
+        raise RuntimeError(f"Hourly update failed for: {', '.join(failed_cities)}.")
     return total_rows
 
 

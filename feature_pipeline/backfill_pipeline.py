@@ -33,18 +33,28 @@ def run_backfill(days: int = config.BACKFILL_DAYS, cities: Optional[Iterable[str
 
     fg = get_feature_group()
     total_rows = 0
+    failed_cities = []
     for city in cities:
-        print(f"[{city}] Fetching {days} days of history ({start_date} to {end_date})...")
-        raw = fetch_combined(start_date=str(start_date), end_date=str(end_date), city=city)
-        print(f"[{city}] Fetched {len(raw)} raw hourly rows.")
+        try:
+            print(f"[{city}] Fetching {days} days of history ({start_date} to {end_date})...")
+            raw = fetch_combined(start_date=str(start_date), end_date=str(end_date), city=city)
+            print(f"[{city}] Fetched {len(raw)} raw hourly rows.")
 
-        features = engineer_features(raw)
-        fg.insert(features)
-        print(f"[{city}] Inserted {len(features)} rows into Hopsworks feature group "
-              f"'{config.FEATURE_GROUP_NAME}' (v{config.FEATURE_GROUP_VERSION}).")
-        total_rows += len(features)
+            features = engineer_features(raw)
+            fg.insert(features)
+            print(f"[{city}] Inserted {len(features)} rows into Hopsworks feature group "
+                  f"'{config.FEATURE_GROUP_NAME}' (v{config.FEATURE_GROUP_VERSION}).")
+            total_rows += len(features)
+        except Exception as exc:
+            # Inserts are upserts on (city, event_time), so a failed city just
+            # needs a re-run - don't let it take down the other 9 cities too.
+            print(f"[{city}] Backfill failed, skipping: {exc}")
+            failed_cities.append(city)
 
-    print(f"Backfill complete: {total_rows} rows inserted across {len(cities)} cities.")
+    print(f"Backfill complete: {total_rows} rows inserted across "
+          f"{len(cities) - len(failed_cities)}/{len(cities)} cities.")
+    if failed_cities:
+        raise RuntimeError(f"Backfill failed for: {', '.join(failed_cities)} (re-run to retry them).")
     return total_rows
 
 

@@ -13,11 +13,19 @@ from typing import Optional
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import config
 
 AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+
+# A 10-city loop makes 20 requests back to back; retry transient network
+# blips/5xx instead of letting one slow response kill the whole run.
+_session = requests.Session()
+_retry = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+_session.mount("https://", HTTPAdapter(max_retries=_retry))
 
 # WEATHER_URL only serves ~92 days of past data (it's the forecast endpoint's
 # recent-history window, not a full archive) - a start_date further back than
@@ -67,7 +75,7 @@ def _fetch_hourly(
     else:
         raise ValueError("Provide either start_date+end_date or forecast_days.")
 
-    response = requests.get(url, params=params, timeout=30)
+    response = _session.get(url, params=params, timeout=(10, 45))
     response.raise_for_status()
     payload = response.json()
 
