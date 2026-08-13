@@ -63,14 +63,27 @@ def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
 
 
 def render_forecast_chart(predictions: pd.DataFrame):
+    values = predictions["predicted_us_aqi"]
+    mean_val = values.mean()
+    # A 0-500 axis makes 3 nearby forecast values look almost equal-height;
+    # zoom the visible range to the mean +/- the largest deviation (with a
+    # padding floor so 3 near-identical values don't collapse to zero range)
+    # so day-to-day differences are visible. Never dips below 0 since AQI can't.
+    padding = max((values - mean_val).abs().max() * 1.4, 10)
+    y_range = [max(mean_val - padding, 0), mean_val + padding]
+
     fig = go.Figure(
         go.Bar(
             x=[f"+{d} day" for d in predictions["horizon_days"]],
-            y=predictions["predicted_us_aqi"],
-            marker_color=[_aqi_category(v)[1] for v in predictions["predicted_us_aqi"]],
+            y=values,
+            marker_color=[_aqi_category(v)[1] for v in values],
         )
     )
-    fig.update_layout(title="3-day AQI forecast", yaxis_title="Predicted US AQI")
+    fig.update_layout(
+        title="3-day AQI forecast",
+        yaxis_title="Predicted US AQI",
+        yaxis_range=y_range,
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
