@@ -125,14 +125,21 @@ FEATURE_DESCRIPTIONS = {
 }
 
 
-def render_shap_panel(model, feature_row: pd.DataFrame, horizon_days: int):
+def render_shap_panel(
+    model, feature_row: pd.DataFrame, horizon_days: int, background_df: pd.DataFrame
+):
     st.subheader(f"Why this +{horizon_days}-day prediction (SHAP)")
 
     X = feature_row[FEATURE_COLUMNS]
     if isinstance(model, (RandomForestRegressor, XGBRegressor)):
         explainer = shap.TreeExplainer(model)
     elif isinstance(model, Ridge):
-        explainer = shap.LinearExplainer(model, X)
+        # LinearExplainer needs a real background sample to compute an expected
+        # value against - passing the single row being explained as its own
+        # background (the previous bug here) makes every SHAP value exactly 0,
+        # since there's nothing to attribute the difference to.
+        background = background_df[FEATURE_COLUMNS].dropna()
+        explainer = shap.LinearExplainer(model, background)
     else:
         st.info("SHAP explanation not available for this model type.")
         return
