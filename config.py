@@ -70,7 +70,6 @@ BACKFILL_DAYS = int(os.getenv("AQI_BACKFILL_DAYS", "365"))
 ROLLING_WINDOWS_HOURS = [3, 24]
 LAG_HOURS = [24, 48]
 
-# --- AQI hazard alert thresholds (US AQI scale) ------------------------------
-
-AQI_ALERT_THRESHOLD_RED = 151   # "Unhealthy" and above
-AQI_ALERT_THRESHOLD_AMBER = 101  # "Unhealthy for Sensitive Groups" and above
+# AQI category thresholds/colors live in app/ui_components.py (AQI_KEY_RANGES)
+# so the dashboard's charts and its "AQI Key" legend read from one source
+# instead of two disagreeing ones.
