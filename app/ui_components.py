@@ -10,17 +10,7 @@ from sklearn.linear_model import Ridge
 
 from xgboost import XGBRegressor
 
-import config
 from training_pipeline.build_dataset import FEATURE_COLUMNS
-
-
-def _aqi_category(aqi_value: float) -> tuple:
-    """Returns (label, color) for a US AQI value."""
-    if aqi_value >= config.AQI_ALERT_THRESHOLD_RED:
-        return "Unhealthy or worse", "#d32f2f"
-    if aqi_value >= config.AQI_ALERT_THRESHOLD_AMBER:
-        return "Unhealthy for sensitive groups", "#f9a825"
-    return "Acceptable", "#2e7d32"
 
 
 AQI_KEY_RANGES = [
@@ -31,6 +21,15 @@ AQI_KEY_RANGES = [
     (201, 300, "Very Unhealthy", "#8e24aa"),
     (301, 500, "Hazardous", "#7e0023"),
 ]
+
+
+def _aqi_category(aqi_value: float) -> tuple:
+    """Returns (label, color) for a US AQI value, from the same breakpoints
+    shown in the AQI Key - so the charts and the key never disagree."""
+    for lo, hi, label, color in AQI_KEY_RANGES:
+        if aqi_value <= hi:
+            return label, color
+    return AQI_KEY_RANGES[-1][2], AQI_KEY_RANGES[-1][3]
 
 
 def render_aqi_key():
