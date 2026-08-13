@@ -1,7 +1,7 @@
 # AQI Forecasting — Pakistan (Serverless)
 
 Predicts the Air Quality Index 3 days ahead for 10 Pakistani cities — Karachi, Lahore,
-Islamabad, Faisalabad, Multan, Peshawar, Quetta, Hyderabad, Abbottabad, and Sukkur — using a
+Islamabad, Faisalabad, Multan, Peshawar, Quetta, Hyderabad, Abbottabad, and Rawalpindi — using a
 serverless stack: an hourly feature pipeline, a [Hopsworks](https://www.hopsworks.ai/) feature
 store and model registry, a daily retraining job, and a Streamlit dashboard with a city
 selector.
