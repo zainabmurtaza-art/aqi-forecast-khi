@@ -108,4 +108,4 @@ horizon_choice = st.selectbox(
 )
 selected = predictions[predictions["horizon_days"] == horizon_choice].iloc[0]
 horizon_hours = horizon_choice * 24
-render_shap_panel(models[horizon_hours], selected["feature_row"], horizon_choice)
+render_shap_panel(models[horizon_hours], selected["feature_row"], horizon_choice, actual_df)
