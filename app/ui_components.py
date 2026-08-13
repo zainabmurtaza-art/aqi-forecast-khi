@@ -11,6 +11,7 @@ from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
 
 from training_pipeline.build_dataset import FEATURE_COLUMNS
+from training_pipeline.models import PersistenceRegressor
 
 
 AQI_KEY_RANGES = [
@@ -140,6 +141,13 @@ def render_shap_panel(
         # since there's nothing to attribute the difference to.
         background = background_df[FEATURE_COLUMNS].dropna()
         explainer = shap.LinearExplainer(model, background)
+    elif isinstance(model, PersistenceRegressor):
+        st.info(
+            "This forecast uses a naive persistence baseline (predicted = current AQI) "
+            "because it beat every trained model on this city/horizon's held-out test "
+            "data - there's no feature-driven explanation to show for a rule this simple."
+        )
+        return
     else:
         st.info("SHAP explanation not available for this model type.")
         return
