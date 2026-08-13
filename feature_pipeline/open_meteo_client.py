@@ -36,9 +36,20 @@ WEATHER_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 # own bursts on top (every city switch is a cache miss on first view); retry
 # transient network blips/5xx and rate limiting (429) instead of failing
 # immediately. urllib3 honors a Retry-After header if Open-Meteo sends one,
-# otherwise backoff_factor gives ~1s/2s/4s between the 3 attempts.
+# otherwise backoff_factor/backoff_max give a 0s/4s/8s/16s/30s schedule
+# (~58s worst case across 5 attempts) - a real rate-limit window (Open-Meteo's
+# free tier is 600 calls/min, and Streamlit Cloud apps share egress IPs, so
+# the limit can be shared with unrelated traffic) needs tens of seconds to
+# clear, not the few seconds 3 quick retries gave it before. backoff_jitter
+# spreads out concurrent viewers' retries instead of them re-hitting in sync.
 _session = requests.Session()
-_retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+_retry = Retry(
+    total=5,
+    backoff_factor=2,
+    backoff_max=30,
+    backoff_jitter=0.5,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
 _session.mount("https://", HTTPAdapter(max_retries=_retry))
 
 AIR_QUALITY_HOURLY_FIELDS = [
