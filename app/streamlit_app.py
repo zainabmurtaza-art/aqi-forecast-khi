@@ -75,7 +75,16 @@ with st.spinner(f"Loading models and latest data for {city_label}..."):
         st.stop()
 
     actual_df = load_recent_actual_features(selected_city)
-    predictions = get_horizon_predictions(models, selected_city)
+
+    try:
+        predictions = get_horizon_predictions(models, selected_city)
+    except Exception:
+        st.error(
+            "Couldn't reach Open-Meteo for the live forecast right now (likely a "
+            "temporary rate limit) even after retrying with backoff. Please reload "
+            "in a minute or two."
+        )
+        st.stop()
 
 if actual_df.empty:
     st.error(
