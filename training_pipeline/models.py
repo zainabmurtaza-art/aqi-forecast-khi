@@ -1,12 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Model factory. RandomForest, Ridge, and XGBoost are the three candidates
-actually trained and compared per (city, horizon).
+Model factory. RandomForest, Ridge, XGBoost, and a naive persistence
+baseline are the four candidates trained and compared per (city, horizon).
 """
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
+
+
+class PersistenceRegressor:
+    """Naive baseline: predicts 'tomorrow looks like today', i.e. the
+    target is just the row's current us_aqi feature value. Not fit to
+    anything - it exists so every city/horizon comparison includes a
+    trivial reference point. If this wins (lowest RMSE) for a given
+    city/horizon, that tells us the trained models aren't capturing that
+    horizon's AQI dynamics at all, not just that they're under-tuned -
+    and it's the honest model to deploy there until that's fixed."""
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X):
+        return X["us_aqi"].to_numpy()
+
 
 MODEL_FACTORY = {
     # max_depth was 12 with no leaf-size floor - on ~90 days of history per
@@ -29,6 +46,7 @@ MODEL_FACTORY = {
         random_state=42,
         n_jobs=-1,
     ),
+    "persistence": lambda: PersistenceRegressor(),
 }
 
 
