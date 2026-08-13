@@ -100,6 +100,31 @@ def render_trend_chart(actual_df: pd.DataFrame):
     st.plotly_chart(fig, use_container_width=True)
 
 
+FEATURE_DESCRIPTIONS = {
+    "pm10": "PM10 — coarse particulate matter (particles ≤10 micrometers), µg/m³",
+    "pm2_5": "PM2.5 — fine particulate matter (particles ≤2.5 micrometers, the pollutant US AQI weighs most heavily), µg/m³",
+    "carbon_monoxide": "Carbon monoxide (CO) concentration, µg/m³",
+    "nitrogen_dioxide": "Nitrogen dioxide (NO₂) concentration, µg/m³ — mainly from vehicle/industrial combustion",
+    "sulphur_dioxide": "Sulphur dioxide (SO₂) concentration, µg/m³ — mainly from burning fuel with sulphur in it",
+    "ozone": "Ground-level ozone (O₃) concentration, µg/m³ — forms from sunlight reacting with other pollutants",
+    "us_aqi": "The current US Air Quality Index reading at this hour",
+    "temperature_2m": "Air temperature 2 meters above ground, °C",
+    "relative_humidity_2m": "Relative humidity 2 meters above ground, %",
+    "surface_pressure": "Atmospheric pressure at the surface, hPa",
+    "wind_speed_10m": "Wind speed 10 meters above ground, km/h — higher wind disperses pollutants and tends to lower AQI",
+    "hour": "Hour of the day (0-23)",
+    "day": "Day of the month (1-31)",
+    "month": "Month of the year (1-12)",
+    "day_of_week": "Day of the week (0 = Monday ... 6 = Sunday)",
+    "is_weekend": "1 if Saturday or Sunday, else 0",
+    "aqi_change_rate": "How much AQI changed from the previous hour to this one",
+    "aqi_roll_mean_3h": "Average AQI over the past 3 hours",
+    "aqi_roll_mean_24h": "Average AQI over the past 24 hours",
+    "aqi_lag_24h": "AQI value exactly 24 hours before this reading (same time yesterday)",
+    "aqi_lag_48h": "AQI value exactly 48 hours before this reading (same time two days ago)",
+}
+
+
 def render_shap_panel(model, feature_row: pd.DataFrame, horizon_days: int):
     st.subheader(f"Why this +{horizon_days}-day prediction (SHAP)")
 
@@ -118,3 +143,7 @@ def render_shap_panel(model, feature_row: pd.DataFrame, horizon_days: int):
     fig = go.Figure(go.Bar(x=contributions.values, y=contributions.index, orientation="h"))
     fig.update_layout(title="Feature contribution to this prediction", xaxis_title="SHAP value")
     st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("What do these feature names mean?"):
+        for col in FEATURE_COLUMNS:
+            st.markdown(f"- **{col}** — {FEATURE_DESCRIPTIONS.get(col, '')}")

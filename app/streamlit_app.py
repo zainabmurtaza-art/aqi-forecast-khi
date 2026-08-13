@@ -96,6 +96,11 @@ with col2:
 
 st.divider()
 
+st.info(
+    "Pick a forecast horizon below to see a SHAP breakdown of which pollutant, weather, "
+    "and time features pushed that specific day's prediction up or down."
+)
+
 horizon_choice = st.selectbox(
     "Explain which forecast?",
     options=predictions["horizon_days"].tolist(),
