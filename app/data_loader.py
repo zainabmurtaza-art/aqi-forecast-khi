@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Cached data/model loading for the dashboard. Connections and registered
-models are cached for the app's lifetime; feature/forecast pulls are cached
-with a TTL matching the hourly pipeline's cadence.
+models are cached for the app's lifetime; actual-feature pulls (Hopsworks)
+are cached with a TTL matching the hourly pipeline's cadence. Forecast
+pulls (Open-Meteo) use a longer TTL - see FORECAST_CACHE_TTL_SECONDS.
 """
 
 from pathlib import Path
@@ -34,6 +35,13 @@ RAW_COLUMNS = [
 ]
 
 LOOKBACK_DAYS_FOR_TREND = 14
+
+# Open-Meteo hit sustained 429 rate limiting today (its free tier is shared
+# across every app on Streamlit Community Cloud's egress IPs, not just this
+# one). A 3-day-ahead forecast doesn't need refreshing every hour, so a
+# longer TTL trades some freshness for far fewer requests against a limit we
+# don't fully control.
+FORECAST_CACHE_TTL_SECONDS = 6 * 3600
 
 
 @st.cache_resource
@@ -72,7 +80,7 @@ def load_recent_actual_features(
     return df[df["event_time"] >= cutoff].reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=FORECAST_CACHE_TTL_SECONDS)
 def load_forecast_raw(city: str) -> pd.DataFrame:
     forecast_days = max(config.FORECAST_HORIZONS_HOURS) // 24 + 1
     return fetch_combined(forecast_days=forecast_days, city=city)
