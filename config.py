@@ -28,7 +28,7 @@ CITIES = {
     "quetta": {"label": "Quetta", "lat": 30.1798, "lon": 66.9750},
     "hyderabad": {"label": "Hyderabad", "lat": 25.3960, "lon": 68.3578},
     "abbottabad": {"label": "Abbottabad", "lat": 34.1463, "lon": 73.2117},
-    "sukkur": {"label": "Sukkur", "lat": 27.7052, "lon": 68.8574},
+    "rawalpindi": {"label": "Rawalpindi", "lat": 33.5651, "lon": 73.0169},
 }
 
 # Single-city default, kept for scripts/back-compat (e.g. AQICN's one-city
