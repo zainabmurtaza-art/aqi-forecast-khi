@@ -48,14 +48,19 @@ def render_aqi_key():
 
 
 def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
-    worst_aqi = max(current_aqi, predictions["predicted_us_aqi"].max())
-    label, color = _aqi_category(worst_aqi)
+    worst_forecast = predictions["predicted_us_aqi"].max()
+    # Severity color/label should escalate if current conditions are already
+    # bad even when the forecast improves, but the displayed "worst forecast"
+    # number must stay forecast-only - conflating the two previously showed
+    # today's current reading mislabeled as a forecast value whenever it was
+    # the higher of the two.
+    label, color = _aqi_category(max(current_aqi, worst_forecast))
 
     st.markdown(
         f"""
         <div style="background-color:{color}; padding:1rem; border-radius:0.5rem; color:white;">
             <strong>AQI status: {label}</strong> — current {current_aqi:.0f},
-            worst forecast over next 3 days: {worst_aqi:.0f} (US AQI scale)
+            worst forecast over next 3 days: {worst_forecast:.0f} (US AQI scale)
         </div>
         """,
         unsafe_allow_html=True,
