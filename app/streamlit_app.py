@@ -23,6 +23,7 @@ from app.ui_components import (
     render_aqi_key,
     render_alert_banner,
     render_forecast_chart,
+    render_manual_prediction_form,
     render_shap_panel,
     render_trend_chart,
 )
@@ -43,7 +44,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-view = st.sidebar.radio("View", ["Forecast", "AQI Key"])
+view = st.sidebar.radio("View", ["Forecast", "Manual Prediction", "AQI Key"])
 
 if view == "AQI Key":
     st.title("US AQI Color Key")
@@ -60,6 +61,21 @@ selected_city = st.sidebar.selectbox(
     index=city_keys.index(default_city),
 )
 city_label = config.CITIES[selected_city]["label"]
+
+if view == "Manual Prediction":
+    st.title(f"Manual AQI Prediction — {city_label}")
+    with st.spinner(f"Loading models for {city_label}..."):
+        try:
+            models = load_models(selected_city)
+        except Exception:
+            st.error(
+                f"No trained models found in Hopsworks yet for {city_label}. Run "
+                "`python -m feature_pipeline.backfill_pipeline` and "
+                "`python -m training_pipeline.train` first."
+            )
+            st.stop()
+    render_manual_prediction_form(models)
+    st.stop()
 
 st.title(f"Air Quality Forecast — {city_label}")
 
