@@ -1,0 +1,10 @@
+# Extra dependencies for training_pipeline.train only (installed on top of
+# requirements.txt by .github/workflows/daily_training_pipeline.yml).
+#
+# Deliberately NOT in requirements.txt: TensorFlow is a large dependency
+# (a couple hundred MB just to import), and requirements.txt is also what
+# Streamlit Community Cloud installs for the live dashboard. The LSTM model
+# it powers (training_pipeline/models.py) is evaluated for comparison but
+# is never eligible to be deployed (see DEPLOYABLE_MODELS in that file), so
+# the app itself never needs TensorFlow installed.
+tensorflow-cpu

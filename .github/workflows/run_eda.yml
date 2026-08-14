@@ -1,0 +1,39 @@
+name: Run EDA notebook (manual)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  run-eda:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-eda.txt
+
+      - name: Register Jupyter kernel
+        run: python -m ipykernel install --user --name python3
+
+      - name: Execute EDA notebook
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT_NAME: ${{ secrets.HOPSWORKS_PROJECT_NAME }}
+        run: |
+          python -m nbconvert --to notebook --execute --output eda_executed.ipynb notebooks/eda.ipynb
+          mkdir -p outputs
+          python -m nbconvert --to html notebooks/eda_executed.ipynb --output-dir outputs
+
+      - name: Upload executed EDA notebook + HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eda-report
+          path: |
+            notebooks/eda_executed.ipynb
+            outputs/eda_executed.html
+          if-no-files-found: warn
