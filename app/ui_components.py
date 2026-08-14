@@ -162,3 +162,171 @@ def render_shap_panel(
     with st.expander("What do these feature names mean?"):
         for col in FEATURE_COLUMNS:
             st.markdown(f"- **{col}** — {FEATURE_DESCRIPTIONS.get(col, '')}")
+
+
+def render_manual_prediction_form(models: dict):
+    """Lets a user type in their own feature values and see what the trained
+    model predicts - a 'what-if' calculator rather than a live forecast.
+    Only needs already-loaded models (no Open-Meteo/Hopsworks feature-group
+    call), so this page works even during a live-data outage."""
+    st.write(
+        "Enter pollutant, weather, and time values to see what the trained "
+        "model predicts for US AQI. Useful for exploring “what if” "
+        "scenarios, independent of live forecast data."
+    )
+
+    horizon_days_options = sorted(h // 24 for h in models.keys())
+    horizon_choice = st.selectbox(
+        "Predict using which horizon's model?",
+        options=horizon_days_options,
+        format_func=lambda d: f"+{d} day model",
+    )
+    horizon_hours = horizon_choice * 24
+
+    st.subheader("Pollutants")
+    col1, col2 = st.columns(2)
+    with col1:
+        pm10 = st.number_input(
+            "PM10 (µg/m³)", min_value=0.0, value=50.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["pm10"],
+        )
+        pm2_5 = st.number_input(
+            "PM2.5 (µg/m³)", min_value=0.0, value=30.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["pm2_5"],
+        )
+        carbon_monoxide = st.number_input(
+            "Carbon monoxide (µg/m³)", min_value=0.0, value=300.0, step=10.0,
+            help=FEATURE_DESCRIPTIONS["carbon_monoxide"],
+        )
+        nitrogen_dioxide = st.number_input(
+            "Nitrogen dioxide (µg/m³)", min_value=0.0, value=20.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["nitrogen_dioxide"],
+        )
+    with col2:
+        sulphur_dioxide = st.number_input(
+            "Sulphur dioxide (µg/m³)", min_value=0.0, value=10.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["sulphur_dioxide"],
+        )
+        ozone = st.number_input(
+            "Ozone (µg/m³)", min_value=0.0, value=30.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["ozone"],
+        )
+        us_aqi = st.number_input(
+            "Current US AQI", min_value=0.0, max_value=500.0, value=100.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["us_aqi"] + " — the “Recent AQI history” "
+            "section below starts equal to this value (the model expects them to be "
+            "roughly consistent with each other); use its reset button if you change "
+            "this after adjusting those.",
+        )
+
+    st.subheader("Weather")
+    col3, col4 = st.columns(2)
+    with col3:
+        temperature_2m = st.number_input(
+            "Temperature (°C)", value=25.0, step=0.5,
+            help=FEATURE_DESCRIPTIONS["temperature_2m"],
+        )
+        relative_humidity_2m = st.number_input(
+            "Relative humidity (%)", min_value=0.0, max_value=100.0, value=50.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["relative_humidity_2m"],
+        )
+    with col4:
+        surface_pressure = st.number_input(
+            "Surface pressure (hPa)", value=1013.0, step=0.5,
+            help=FEATURE_DESCRIPTIONS["surface_pressure"],
+        )
+        wind_speed_10m = st.number_input(
+            "Wind speed (km/h)", min_value=0.0, value=10.0, step=0.5,
+            help=FEATURE_DESCRIPTIONS["wind_speed_10m"],
+        )
+
+    st.subheader("Date & time")
+    col5, col6 = st.columns(2)
+    with col5:
+        selected_date = st.date_input("Date")
+    with col6:
+        hour = st.slider("Hour of day", 0, 23, 12, help=FEATURE_DESCRIPTIONS["hour"])
+
+    day = selected_date.day
+    month = selected_date.month
+    day_of_week = selected_date.weekday()  # Monday=0 ... Sunday=6, same convention as training
+    is_weekend = int(day_of_week >= 5)
+
+    history_keys = [
+        "manual_pred_roll_3h", "manual_pred_roll_24h",
+        "manual_pred_lag_24h", "manual_pred_lag_48h",
+    ]
+    # setdefault seeds each key's very first value only; passing `value=` AND a
+    # `key=` already holding session state to the same widget call just logs a
+    # Streamlit warning and is ignored, so session_state has to be the only
+    # source of truth from here on (verified live: widgets keep whatever value
+    # they were last given across reruns regardless of a later `value=` arg -
+    # it's the only way to actually push a new value into a rendered widget).
+    for k in history_keys:
+        st.session_state.setdefault(k, float(us_aqi))
+
+    with st.expander("Recent AQI history (defaults to Current AQI above until you change them)"):
+        if st.button("Reset these to match Current AQI"):
+            for k in history_keys:
+                st.session_state[k] = float(us_aqi)
+            st.rerun()
+
+        aqi_change_rate = st.number_input(
+            "AQI change from the previous hour", value=0.0, step=1.0,
+            help=FEATURE_DESCRIPTIONS["aqi_change_rate"],
+        )
+        aqi_roll_mean_3h = st.number_input(
+            "Average AQI over the past 3 hours", step=1.0,
+            key=history_keys[0], help=FEATURE_DESCRIPTIONS["aqi_roll_mean_3h"],
+        )
+        aqi_roll_mean_24h = st.number_input(
+            "Average AQI over the past 24 hours", step=1.0,
+            key=history_keys[1], help=FEATURE_DESCRIPTIONS["aqi_roll_mean_24h"],
+        )
+        aqi_lag_24h = st.number_input(
+            "AQI exactly 24 hours ago", step=1.0,
+            key=history_keys[2], help=FEATURE_DESCRIPTIONS["aqi_lag_24h"],
+        )
+        aqi_lag_48h = st.number_input(
+            "AQI exactly 48 hours ago", step=1.0,
+            key=history_keys[3], help=FEATURE_DESCRIPTIONS["aqi_lag_48h"],
+        )
+
+    if st.button("Predict AQI", type="primary"):
+        row = pd.DataFrame([{
+            "pm10": pm10,
+            "pm2_5": pm2_5,
+            "carbon_monoxide": carbon_monoxide,
+            "nitrogen_dioxide": nitrogen_dioxide,
+            "sulphur_dioxide": sulphur_dioxide,
+            "ozone": ozone,
+            "us_aqi": us_aqi,
+            "temperature_2m": temperature_2m,
+            "relative_humidity_2m": relative_humidity_2m,
+            "surface_pressure": surface_pressure,
+            "wind_speed_10m": wind_speed_10m,
+            "hour": hour,
+            "day": day,
+            "month": month,
+            "day_of_week": day_of_week,
+            "is_weekend": is_weekend,
+            "aqi_change_rate": aqi_change_rate,
+            "aqi_roll_mean_3h": aqi_roll_mean_3h,
+            "aqi_roll_mean_24h": aqi_roll_mean_24h,
+            "aqi_lag_24h": aqi_lag_24h,
+            "aqi_lag_48h": aqi_lag_48h,
+        }])[FEATURE_COLUMNS]
+
+        model = models[horizon_hours]
+        predicted = float(model.predict(row)[0])
+        label, color = _aqi_category(predicted)
+
+        st.markdown(
+            f"""
+            <div style="background-color:{color}; padding:1.5rem; border-radius:0.5rem; color:white;">
+                <strong style="font-size:1.3rem;">Predicted US AQI: {predicted:.0f}</strong><br/>
+                Category: {label}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
