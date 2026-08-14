@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Trains RandomForest, Ridge, and XGBoost for each (city, forecast horizon)
-pair, evaluates all three on a chronological hold-out split, and registers
-the lower-RMSE model per city/horizon to the Hopsworks Model Registry with
-its metrics attached.
+Trains RandomForest, Ridge, XGBoost, a persistence baseline, and an LSTM
+for each (city, forecast horizon) pair, evaluates all five on a
+chronological hold-out split, and registers the lower-RMSE *deployable*
+candidate per city/horizon to the Hopsworks Model Registry with its
+metrics attached (see DEPLOYABLE_MODELS in models.py for why the LSTM is
+compared but never deployed).
 
-The full comparison (all 3 candidates x 10 cities x 3 horizons, with the
-winner flagged) is written to outputs/training_summary.csv and uploaded as
-a workflow artifact by .github/workflows/daily_training_pipeline.yml — see
-that run's "Artifacts" section to check which model won where.
+The full comparison (all 5 candidates x 10 cities x 3 horizons, with the
+winner and each candidate's deployable flag) is written to
+outputs/training_summary.csv and uploaded as a workflow artifact by
+.github/workflows/daily_training_pipeline.yml — see that run's
+"Artifacts" section to check which model won where.
 
 Run manually: python -m training_pipeline.train
+  (needs requirements-train.txt installed too, for the LSTM's TensorFlow)
 Run by CI: .github/workflows/daily_training_pipeline.yml (daily cron)
 """
 
@@ -31,7 +35,7 @@ from training_pipeline.build_dataset import (
     target_column_name,
 )
 from training_pipeline.evaluate import evaluate
-from training_pipeline.models import MODEL_FACTORY
+from training_pipeline.models import DEPLOYABLE_MODELS, MODEL_FACTORY
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 SUMMARY_CSV_PATH = OUTPUT_DIR / "training_summary.csv"
@@ -58,21 +62,38 @@ def _retry_transient(fn, retries=3, backoff_seconds=5):
 
 
 def train_and_select_best(X_train, y_train, X_test, y_test):
-    """Trains every candidate model, returns (best_name, best_model, best_metrics, comparison_df)."""
+    """Trains every candidate model, returns (best_name, best_model, best_metrics, comparison_df).
+
+    The winner is chosen only among DEPLOYABLE_MODELS (see models.py) - some
+    candidates (currently the LSTM) are evaluated and reported for comparison
+    purposes but are never eligible to actually be registered/deployed, so a
+    candidate outperforming the trained-and-deployable ones doesn't silently
+    change what ships. Every candidate is trained in its own try/except so one
+    failing (e.g. LSTM needing more rows than a city/horizon has) doesn't
+    lose the rest of the comparison."""
     results = []
     fitted = {}
 
     for name, build_model in MODEL_FACTORY.items():
-        model = build_model()
-        model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        metrics = evaluate(y_test, preds)
-        results.append({"model": name, **metrics})
-        fitted[name] = model
+        try:
+            model = build_model()
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+            metrics = evaluate(y_test, preds)
+            results.append({"model": name, **metrics})
+            fitted[name] = model
+        except Exception as exc:
+            print(f"[{name}] Failed to train/evaluate, excluding from this comparison: {exc}")
 
-    comparison = pd.DataFrame(results).sort_values("rmse")
-    best_name = comparison.iloc[0]["model"]
-    best_metrics = comparison.iloc[0].to_dict()
+    comparison = pd.DataFrame(results).sort_values("rmse").reset_index(drop=True)
+    comparison["deployable"] = comparison["model"].isin(DEPLOYABLE_MODELS)
+
+    deployable_rows = comparison[comparison["deployable"]]
+    if deployable_rows.empty:
+        raise RuntimeError("No deployable candidate trained successfully for this city/horizon.")
+
+    best_name = deployable_rows.iloc[0]["model"]
+    best_metrics = deployable_rows.iloc[0].to_dict()
     return best_name, fitted[best_name], best_metrics, comparison
 
 

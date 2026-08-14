@@ -1,0 +1,5 @@
+# Extra dependencies for headlessly executing notebooks/eda.ipynb in CI
+# (installed on top of requirements.txt by .github/workflows/run_eda.yml).
+# Not needed by the app or the other pipelines, so kept out of requirements.txt.
+nbconvert
+ipykernel
