@@ -19,13 +19,21 @@ import streamlit as st
 
 import config
 from app import theme
-from app.data_loader import get_horizon_predictions, load_models, load_recent_actual_features
+from app.data_loader import (
+    get_horizon_predictions,
+    load_model_metrics,
+    load_models,
+    load_recent_actual_features,
+)
 from app.ui_components import (
     render_aqi_key,
     render_alert_banner,
+    render_copilot,
     render_current_readings,
     render_forecast_chart,
+    render_health_guidelines,
     render_manual_prediction_form,
+    render_model_metrics,
     render_shap_panel,
     render_trend_chart,
 )
@@ -34,18 +42,16 @@ st.set_page_config(page_title="AQI Forecast — Pakistan", layout="wide")
 theme.apply_theme()
 
 view = st.sidebar.radio(
-    "View", ["Current Readings", "Forecast", "Manual Prediction", "AQI Key"]
+    "View",
+    [
+        "Current Readings",
+        "Forecast",
+        "Model & Explanation",
+        "Manual Prediction",
+        "Health & AQI Key",
+        "AQI Copilot",
+    ],
 )
-
-if view == "AQI Key":
-    st.title("US AQI Colour Key")
-    st.markdown(
-        '<div class="aqi-caption">The category bands every reading and forecast '
-        "on this dashboard is coloured against.</div>",
-        unsafe_allow_html=True,
-    )
-    render_aqi_key()
-    st.stop()
 
 city_keys = list(config.CITIES.keys())
 default_city = config.CITY_NAME if config.CITY_NAME in config.CITIES else city_keys[0]
@@ -86,6 +92,89 @@ if view == "Current Readings":
         st.stop()
 
     render_current_readings(readings_df, city_label)
+    st.stop()
+
+if view == "Health & AQI Key":
+    st.title("Health Guidance & AQI Key")
+    st.markdown(
+        '<div class="aqi-caption">What today&rsquo;s air quality means for different '
+        "people, and the colour bands every number on this dashboard is measured "
+        "against.</div>",
+        unsafe_allow_html=True,
+    )
+    # Current AQI is a nicety here, not a requirement — the band-by-band guidance
+    # and the colour key are still worth showing if the feature store is down.
+    current_aqi = None
+    try:
+        readings_df = load_recent_actual_features(selected_city)
+        if not readings_df.empty:
+            current_aqi = float(readings_df.sort_values("event_time")["us_aqi"].iloc[-1])
+    except Exception:
+        st.warning(
+            "Couldn't load the current reading, so the guidance below is shown "
+            "without today's status."
+        )
+
+    render_health_guidelines(current_aqi, city_label)
+    st.divider()
+    st.subheader("Colour key")
+    render_aqi_key()
+    st.stop()
+
+if view == "AQI Copilot":
+    st.title("AQI Copilot")
+    render_copilot(
+        get_readings=load_recent_actual_features,
+        get_forecast=lambda city: get_horizon_predictions(load_models(city), city),
+        get_metrics=load_model_metrics,
+        get_models=load_models,
+        default_city=selected_city,
+    )
+    st.stop()
+
+if view == "Model & Explanation":
+    st.title(f"Model & Explanation — {city_label}")
+    st.markdown(
+        '<div class="aqi-caption">Which model is producing each forecast, how '
+        "accurate it has been, and what drove today&rsquo;s numbers.</div>",
+        unsafe_allow_html=True,
+    )
+    with st.spinner(f"Loading models for {city_label}..."):
+        try:
+            models = load_models(selected_city)
+            metrics_df = load_model_metrics(selected_city)
+        except Exception:
+            st.error(
+                f"No trained models found in Hopsworks yet for {city_label}. Run "
+                "`python -m feature_pipeline.backfill_pipeline` and "
+                "`python -m training_pipeline.train` first."
+            )
+            st.stop()
+
+    render_model_metrics(models, metrics_df, city_label)
+
+    st.divider()
+
+    actual_df = load_recent_actual_features(selected_city)
+    try:
+        predictions = get_horizon_predictions(models, selected_city)
+    except Exception:
+        st.warning(
+            "Couldn't reach Open-Meteo for the live forecast, so there's no "
+            "individual prediction to explain right now. The metrics above are "
+            "unaffected. Please reload in a minute or two."
+        )
+        st.stop()
+
+    horizon_choice = st.selectbox(
+        "Explain which forecast?",
+        options=predictions["horizon_days"].tolist(),
+        format_func=lambda d: f"+{d} day",
+    )
+    selected = predictions[predictions["horizon_days"] == horizon_choice].iloc[0]
+    render_shap_panel(
+        models[horizon_choice * 24], selected["feature_row"], horizon_choice, actual_df
+    )
     st.stop()
 
 if view == "Manual Prediction":
@@ -153,19 +242,10 @@ with col2:
 
 st.divider()
 
-st.subheader("Why the model forecast this")
 st.markdown(
-    '<div class="aqi-caption">Pick a horizon to see a SHAP breakdown of which '
-    "pollutant, weather, and time features pushed that day&rsquo;s prediction "
-    "up or down.</div>",
+    '<div class="aqi-caption">Want to know why these numbers came out the way they '
+    "did, or how accurate the model has been? See <strong>Model &amp; "
+    "Explanation</strong>. For what today&rsquo;s air quality means for you, see "
+    "<strong>Health &amp; AQI Key</strong>.</div>",
     unsafe_allow_html=True,
 )
-
-horizon_choice = st.selectbox(
-    "Explain which forecast?",
-    options=predictions["horizon_days"].tolist(),
-    format_func=lambda d: f"+{d} day",
-)
-selected = predictions[predictions["horizon_days"] == horizon_choice].iloc[0]
-horizon_hours = horizon_choice * 24
-render_shap_panel(models[horizon_hours], selected["feature_row"], horizon_choice, actual_df)

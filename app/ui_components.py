@@ -12,9 +12,37 @@ from sklearn.linear_model import Ridge
 from xgboost import XGBRegressor
 
 import config
-from app import theme
+from app import copilot, health_guidance, theme
+from app.data_loader import algorithm_label
 from training_pipeline.build_dataset import FEATURE_COLUMNS
 from training_pipeline.models import PersistenceRegressor
+
+# Reader-facing names for the model's feature columns, used anywhere a feature
+# is named in prose or on a chart axis. Raw column names (pm2_5, aqi_lag_24h)
+# are precise but mean nothing to someone who hasn't read the pipeline.
+SHAP_PLAIN_NAMES = {
+    "pm10": "PM10 dust level",
+    "pm2_5": "PM2.5 fine particles",
+    "carbon_monoxide": "Carbon monoxide",
+    "nitrogen_dioxide": "Nitrogen dioxide",
+    "sulphur_dioxide": "Sulphur dioxide",
+    "ozone": "Ozone",
+    "us_aqi": "Current AQI",
+    "temperature_2m": "Temperature",
+    "relative_humidity_2m": "Humidity",
+    "surface_pressure": "Air pressure",
+    "wind_speed_10m": "Wind speed",
+    "hour": "Hour of day",
+    "day": "Day of month",
+    "month": "Month of year",
+    "day_of_week": "Day of week",
+    "is_weekend": "Weekend or weekday",
+    "aqi_change_rate": "AQI change in the last hour",
+    "aqi_roll_mean_3h": "Average AQI over 3 hours",
+    "aqi_roll_mean_24h": "Average AQI over 24 hours",
+    "aqi_lag_24h": "AQI this time yesterday",
+    "aqi_lag_48h": "AQI this time two days ago",
+}
 
 
 AQI_KEY_RANGES = [
@@ -129,6 +157,70 @@ def render_aqi_key():
         for lo, hi, label, color in AQI_KEY_RANGES
     )
     st.markdown(theme.card("US AQI categories", rows), unsafe_allow_html=True)
+
+
+def render_health_guidelines(current_aqi=None, city_label: str = ""):
+    """Health advisories for the current reading, then the full band-by-band table."""
+    if current_aqi is not None:
+        category, color = _aqi_category(current_aqi)
+        st.markdown(
+            f"""
+            <div class="aqi-hero" style="background-color:{color};">
+                <div>
+                    <div class="aqi-hero-label">Current status &mdash; {city_label}</div>
+                    <div class="aqi-hero-value">{current_aqi:.0f}</div>
+                </div>
+                <div>
+                    <div class="aqi-hero-label">Category</div>
+                    <div class="aqi-hero-category">{category}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="aqi-caption">{health_guidance.headline_for(category)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        advice = health_guidance.guidance_for(category)
+        columns = st.columns(2)
+        for i, group in enumerate(health_guidance.GROUPS):
+            with columns[i % 2]:
+                st.markdown(
+                    theme.card(group, f"<div>{advice[group]}</div>"),
+                    unsafe_allow_html=True,
+                )
+
+    st.subheader("Guidance at every AQI level")
+    st.markdown(
+        '<div class="aqi-caption">What each band means for different people, so you can '
+        "read ahead to the forecast as well as today.</div>",
+        unsafe_allow_html=True,
+    )
+
+    for lo, hi, label, color in AQI_KEY_RANGES:
+        advice = health_guidance.guidance_for(label)
+        rows = "".join(
+            f'<div style="margin-bottom:0.5rem;"><strong>{group}:</strong> {advice[group]}</div>'
+            for group in health_guidance.GROUPS
+        )
+        st.markdown(
+            f"""
+            <div class="aqi-card" style="border-left:6px solid {color};">
+                <div class="aqi-card-title" style="color:{color};">
+                    {label} &nbsp;&middot;&nbsp; AQI {lo}&ndash;{hi}
+                </div>
+                {rows}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f'<div class="aqi-caption">{health_guidance.DISCLAIMER}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
@@ -351,10 +443,117 @@ FEATURE_DESCRIPTIONS = {
 }
 
 
+def _metric_quality(r2) -> tuple:
+    """(verdict, plain-language meaning) for an R2 value.
+
+    R2 below 0 is not a rounding artefact — it means the model does worse on
+    held-out data than always guessing the average would. That is worth saying
+    outright rather than presenting a negative number without comment.
+    """
+    if r2 is None:
+        return "unknown", "No score was recorded for this model."
+    if r2 < 0:
+        return "worse than guessing the average", (
+            "A negative R² means this model's held-out predictions were less accurate "
+            "than simply always predicting the average AQI. Treat this horizon's "
+            "forecast with caution."
+        )
+    if r2 < 0.3:
+        return "weak", "The model explains only a small share of the variation in AQI."
+    if r2 < 0.6:
+        return "moderate", "The model captures a fair share of the variation in AQI."
+    if r2 < 0.85:
+        return "good", "The model explains most of the variation in AQI."
+    return "strong", "The model explains almost all of the variation in held-out AQI."
+
+
+def render_model_metrics(models: dict, metrics_df: pd.DataFrame, city_label: str):
+    """Which algorithm is deployed per horizon, and how well it scored.
+
+    Metrics come from the Model Registry (recorded at training time on a
+    chronological hold-out), so they describe the model actually in use.
+    """
+    st.subheader("Which model is making these forecasts")
+
+    if metrics_df is None or metrics_df.empty:
+        st.warning("No registered model metrics found for this city yet.")
+        return
+
+    for _, row in metrics_df.sort_values("horizon_days").iterrows():
+        horizon_hours = int(row["horizon_days"]) * 24
+        model = models.get(horizon_hours)
+        algorithm = algorithm_label(model) if model is not None else "unknown"
+        verdict, meaning = _metric_quality(row["r2"])
+
+        def fmt(value, digits=3):
+            return "—" if value is None or pd.isna(value) else f"{value:.{digits}f}"
+
+        cells = theme.reading_grid([
+            theme.reading("Algorithm", algorithm),
+            theme.reading("RMSE", fmt(row["rmse"], 2), "AQI"),
+            theme.reading("MAE", fmt(row["mae"], 2), "AQI"),
+            theme.reading("R²", fmt(row["r2"])),
+        ])
+        st.markdown(
+            theme.card(f"+{int(row['horizon_days'])}-day forecast &mdash; {city_label}", cells),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="aqi-caption"><strong>Fit: {verdict}.</strong> {meaning}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("What do RMSE, MAE and R² mean?"):
+        st.markdown(
+            "- **MAE (mean absolute error)** — the average size of the miss, in AQI points. "
+            "An MAE of 5 means the forecast is typically about 5 AQI points off.\n"
+            "- **RMSE (root mean squared error)** — the same idea, but large misses count "
+            "for much more. RMSE well above MAE means the model is occasionally badly wrong.\n"
+            "- **R² (coefficient of determination)** — the share of the variation in AQI the "
+            "model explains. 1.0 is perfect, 0 is no better than always guessing the "
+            "average, and below 0 is *worse* than that.\n\n"
+            "All three are measured on a chronological hold-out — the most recent slice of "
+            "history, which the model never saw during training."
+        )
+
+    st.markdown(
+        '<div class="aqi-caption">Each city and horizon is trained separately, and the '
+        "algorithm with the lowest RMSE is the one deployed — which is why different "
+        "horizons can use different models.</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _shap_sentence(feature: str, value, contribution: float) -> str:
+    """One plain-language line: what this feature was, and which way it pushed."""
+    direction = "raised" if contribution >= 0 else "lowered"
+    label = SHAP_PLAIN_NAMES.get(feature, feature)
+    unit = FEATURE_UNITS.get(feature, "")
+    shown = _format_value(feature, value)
+
+    # Don't append "AQI" to a value whose label already says AQI ("Current AQI
+    # was 62 AQI"), and drop the unit entirely for a missing value.
+    if shown == "—" or (unit == "AQI" and "AQI" in label):
+        unit = ""
+    value_part = f"{shown}{(' ' + unit) if unit else ''}"
+
+    magnitude = f"{abs(contribution):.1f}"
+    return (
+        f"<strong>{label}</strong> was {value_part} &mdash; this {direction} the forecast "
+        f"by <strong>{magnitude}</strong> AQI point{'' if magnitude == '1.0' else 's'}."
+    )
+
+
 def render_shap_panel(
     model, feature_row: pd.DataFrame, horizon_days: int, background_df: pd.DataFrame
 ):
-    st.subheader(f"Why this +{horizon_days}-day prediction (SHAP)")
+    st.subheader(f"Why the model forecast this for +{horizon_days} day")
+    st.markdown(
+        '<div class="aqi-caption">The model starts from a baseline (its average '
+        "prediction) and then adjusts up or down for each thing it measured today. "
+        "Below is what moved this particular forecast, and by how much.</div>",
+        unsafe_allow_html=True,
+    )
 
     X = feature_row[FEATURE_COLUMNS]
     if isinstance(model, (RandomForestRegressor, XGBRegressor)):
@@ -378,29 +577,123 @@ def render_shap_panel(
         return
 
     shap_values = explainer.shap_values(X)
-    contributions = pd.Series(shap_values[0], index=FEATURE_COLUMNS).sort_values()
+    contributions = pd.Series(shap_values[0], index=FEATURE_COLUMNS)
+    values = X.iloc[0]
 
-    # Navy for features pushing the forecast down, magenta for those pushing
-    # it up - the same two-colour vocabulary the rest of the page uses.
+    # --- the plain-language version, first ---------------------------------
+    ranked = contributions.reindex(contributions.abs().sort_values(ascending=False).index)
+    pushed_up = [f for f in ranked.index if ranked[f] > 0][:3]
+    pushed_down = [f for f in ranked.index if ranked[f] < 0][:3]
+
+    col_up, col_down = st.columns(2)
+    with col_up:
+        rows = "".join(
+            f'<div style="margin-bottom:0.55rem;">{_shap_sentence(f, values[f], ranked[f])}</div>'
+            for f in pushed_up
+        ) or '<div class="aqi-caption">Nothing pushed this forecast up.</div>'
+        st.markdown(theme.card("What pushed the forecast UP", rows), unsafe_allow_html=True)
+    with col_down:
+        rows = "".join(
+            f'<div style="margin-bottom:0.55rem;">{_shap_sentence(f, values[f], ranked[f])}</div>'
+            for f in pushed_down
+        ) or '<div class="aqi-caption">Nothing pushed this forecast down.</div>'
+        st.markdown(theme.card("What pushed the forecast DOWN", rows), unsafe_allow_html=True)
+
+    net = contributions.sum()
+    st.markdown(
+        f'<div class="aqi-caption">Together these adjustments moved the forecast '
+        f'<strong>{"up" if net >= 0 else "down"} {abs(net):.1f} AQI points</strong> '
+        "from the model's baseline prediction.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # --- then the full chart, for anyone who wants it ----------------------
+    ordered = contributions.sort_values()
     fig = go.Figure(
         go.Bar(
-            x=contributions.values,
-            y=contributions.index,
+            x=ordered.values,
+            y=[SHAP_PLAIN_NAMES.get(f, f) for f in ordered.index],
             orientation="h",
             marker_color=[
-                theme.MAGENTA if v >= 0 else theme.NAVY_SOFT for v in contributions.values
+                theme.MAGENTA if v >= 0 else theme.NAVY_SOFT for v in ordered.values
             ],
+            hovertemplate="%{y}<br>%{x:+.2f} AQI points<extra></extra>",
         )
     )
     fig.update_layout(
-        title="Feature contribution to this prediction",
-        xaxis_title="SHAP value (negative lowers the forecast, positive raises it)",
+        title="Every feature's effect on this forecast",
+        xaxis_title="← lowers the forecast    |    raises the forecast →   (AQI points)",
     )
-    st.plotly_chart(theme.style_figure(fig, height=520), use_container_width=True)
+    st.plotly_chart(theme.style_figure(fig, height=560), use_container_width=True)
+
+    with st.expander("How do I read this chart?"):
+        st.markdown(
+            "Each bar is one thing the model looked at, and how far it moved **this "
+            "particular forecast** away from the model's usual prediction.\n\n"
+            "- **Bars to the right** (magenta) pushed the predicted AQI **up** — worse air.\n"
+            "- **Bars to the left** (navy) pushed it **down** — cleaner air.\n"
+            "- **Bar length** is how much: the units are AQI points, so a bar at +4 "
+            "added 4 points to the forecast.\n"
+            "- **Features near the top and bottom** mattered most; ones bunched near zero "
+            "barely affected this forecast at all.\n\n"
+            "These are SHAP values — a method that fairly splits a prediction's total "
+            "movement between the features that caused it, so the bars add up to the "
+            "gap between this forecast and the model's baseline."
+        )
 
     with st.expander("What do these feature names mean?"):
         for col in FEATURE_COLUMNS:
-            st.markdown(f"- **{col}** — {FEATURE_DESCRIPTIONS.get(col, '')}")
+            label = SHAP_PLAIN_NAMES.get(col, col)
+            st.markdown(f"- **{label}** (`{col}`) — {FEATURE_DESCRIPTIONS.get(col, '')}")
+
+
+def render_copilot(get_readings, get_forecast, get_metrics, get_models, default_city):
+    """Chat panel over the grounded copilot in app/copilot.py."""
+    st.markdown(
+        '<div class="aqi-caption">Ask about current air quality, forecasts, pollutants, '
+        "or the models. Every answer is read from this dashboard&rsquo;s own stored data, "
+        "so the numbers are real ones &mdash; not generated text.</div>",
+        unsafe_allow_html=True,
+    )
+
+    history = st.session_state.setdefault("copilot_history", [])
+
+    with st.expander("Try an example question"):
+        for i, example in enumerate(copilot.EXAMPLE_QUESTIONS):
+            if st.button(example, key=f"copilot_example_{i}"):
+                st.session_state["copilot_pending"] = example
+                st.rerun()
+
+    typed = st.chat_input("Ask about air quality…")
+    question = st.session_state.pop("copilot_pending", None) or typed
+
+    if question:
+        reply = copilot.answer(
+            question,
+            get_readings=get_readings,
+            get_forecast=get_forecast,
+            get_metrics=get_metrics,
+            get_models=get_models,
+            default_city=default_city,
+        )
+        history.append({"question": question, "answer": reply})
+
+    if not history:
+        st.info(
+            "No questions yet — try one of the examples above, or type your own below."
+        )
+        return
+
+    # Newest exchange first, so the latest answer is visible without scrolling.
+    for exchange in reversed(history):
+        with st.chat_message("user"):
+            st.markdown(exchange["question"])
+        with st.chat_message("assistant"):
+            st.markdown(exchange["answer"])
+
+    if st.button("Clear conversation"):
+        st.session_state["copilot_history"] = []
+        st.rerun()
 
 
 def render_manual_prediction_form(models: dict):

@@ -49,6 +49,23 @@ def get_project():
     return hopsworks_utils.get_project()
 
 
+# Estimator class name -> the name a reader would recognise. Taken from the
+# loaded object rather than the registry description, because models registered
+# before the description fix (commit 6fce628) name only the registry entry, not
+# the winning algorithm.
+ALGORITHM_LABELS = {
+    "RandomForestRegressor": "Random Forest",
+    "XGBRegressor": "XGBoost",
+    "Ridge": "Ridge Regression",
+    "PersistenceRegressor": "Persistence baseline",
+    "LSTMRegressor": "LSTM",
+}
+
+
+def algorithm_label(model) -> str:
+    return ALGORITHM_LABELS.get(type(model).__name__, type(model).__name__)
+
+
 @st.cache_resource
 def load_models(city: str) -> dict:
     """Returns {horizon_hours: fitted sklearn model} for each configured horizon, for one city."""
@@ -62,6 +79,45 @@ def load_models(city: str) -> dict:
         models[horizon] = joblib.load(Path(model_dir) / "model.pkl")
 
     return models
+
+
+@st.cache_data(ttl=3600)
+def load_model_metrics(city: str) -> pd.DataFrame:
+    """Held-out metrics recorded at training time, one row per horizon.
+
+    Read from the Model Registry rather than recomputed, so the figures shown
+    are exactly the ones the winning model was selected on.
+    """
+    registry = hopsworks_utils.get_model_registry(get_project())
+    rows = []
+
+    for horizon in config.FORECAST_HORIZONS_HOURS:
+        name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(city=city, horizon=horizon // 24)
+        try:
+            hw_model = registry.get_best_model(name, "rmse", "min")
+        except Exception:
+            continue
+
+        metrics = hw_model.training_metrics or {}
+        rows.append(
+            {
+                "horizon_days": horizon // 24,
+                "registry_name": name,
+                "version": hw_model.version,
+                "rmse": _as_float(metrics.get("rmse")),
+                "mae": _as_float(metrics.get("mae")),
+                "r2": _as_float(metrics.get("r2")),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _as_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @st.cache_data(ttl=3600)
