@@ -9,11 +9,13 @@ this project goes through — see its docstring for why a plain
 `requests`-based retry list wasn't enough.
 """
 
+import socket
 import time
 
 import hopsworks
 import requests
 from hsfs.feature import Feature
+from hsfs.statistics_config import StatisticsConfig
 
 import config
 
@@ -34,19 +36,30 @@ except ImportError:  # pragma: no cover - depends on installed SDK layout
 
 FEATURE_GROUP_DESCRIPTION = "Hourly AQI + weather features for 3-day-ahead forecasting."
 
+# See the note in get_feature_group() for why statistics are off. Note this
+# only applies on creation - on an existing feature group the setting has to be
+# changed with fg.statistics_config.enabled = False; fg.update_statistics_config().
+_STATISTICS_CONFIG = StatisticsConfig(enabled=False)
+
 # Status codes worth another attempt: transient server-side faults, gateway
 # blips, and rate limiting. Deliberately excludes 400/401/403/404 — retrying a
 # bad request or a bad API key just wastes minutes before failing anyway.
 _TRANSIENT_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-# Network-level faults. Note builtin ConnectionError/TimeoutError are OSError
-# subclasses, and requests' own ConnectionError/Timeout are RequestException
-# subclasses; both are listed for clarity rather than out of necessity.
+# Network-level faults. Deliberately NOT bare OSError: that would also cover
+# FileNotFoundError and PermissionError, which are deterministic and just burn
+# the full backoff schedule before failing anyway (observed retrying a missing
+# cert directory four times). socket.error IS OSError, so the network cases we
+# actually want are named individually instead.
 _TRANSIENT_EXCEPTIONS = (
     requests.exceptions.RequestException,
     ConnectionError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
     TimeoutError,
-    OSError,
+    socket.timeout,
+    socket.gaierror,
 )
 
 _PRIMARY_KEY = ["city", "event_time"]
@@ -170,7 +183,50 @@ def get_feature_group(feature_store=None):
         # Hopsworks' other built-in option and needs nothing extra.
         time_travel_format="HUDI",
         features=_SCHEMA,
+        # Statistics are computed by the offline materialization job as its
+        # last step, after the Hudi write. From 2026-08-16 that step began
+        # failing server-side (StatisticsApi.post -> HTTP 500 "Transaction
+        # marked for rollback"), which failed the whole job and rolled the
+        # commit back - so inserts kept returning success while nothing
+        # actually landed in the offline store for 19 days. We don't read
+        # these statistics anywhere, so taking the step out of the write path
+        # removes the failure without losing anything we use.
+        statistics_config=_STATISTICS_CONFIG,
     )
+
+
+def latest_event_time(feature_group=None):
+    """Newest event_time actually readable from the offline store, or None.
+
+    Reads back what fg.read() serves rather than trusting what insert()
+    returned. insert() only hands rows to Kafka and returns immediately; a
+    separate materialization job moves them into the offline table, so a
+    broken job leaves insert() looking perfectly successful while nothing new
+    is readable. Callers use this to tell the two apart.
+    """
+    import pandas as pd
+
+    feature_group = feature_group or get_feature_group()
+    df = feature_group.read()
+    if df is None or len(df) == 0:
+        return None
+    return pd.to_datetime(df["event_time"], utc=True).max()
+
+
+def check_offline_store_freshness(max_age_hours: float, feature_group=None):
+    """Returns (is_fresh, age_hours, newest_event_time) for the offline store.
+
+    Deliberately separate from latest_event_time() so callers can report the
+    numbers even when they choose not to fail on them.
+    """
+    import pandas as pd
+
+    newest = latest_event_time(feature_group)
+    if newest is None:
+        return False, None, None
+
+    age_hours = (pd.Timestamp.now(tz="UTC") - newest).total_seconds() / 3600
+    return age_hours <= max_age_hours, age_hours, newest
 
 
 def get_model_registry(project=None):

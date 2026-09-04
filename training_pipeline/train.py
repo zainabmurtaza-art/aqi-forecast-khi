@@ -50,6 +50,10 @@ SUMMARY_CSV_PATH = OUTPUT_DIR / "training_summary.csv"
 # lost to a blip are replaced within a day; a majority failing is systemic.
 MAX_TOLERATED_FAILURE_RATIO = 0.25
 
+# Training runs daily on hourly data, so anything much past a day means the
+# feature pipeline has stopped delivering. See _warn_if_stale().
+MAX_TRAINING_DATA_AGE_HOURS = 36.0
+
 
 def train_and_select_best(X_train, y_train, X_test, y_test):
     """Trains every candidate model, returns (best_name, best_model, best_metrics, comparison_df).
@@ -121,6 +125,7 @@ def run_training():
     df = retry_on_transient(build_training_data, description="Read feature group")
     print(f"Loaded {len(df)} feature rows with horizon targets attached "
           f"across {df['city'].nunique()} cities.")
+    _warn_if_stale(df)
 
     all_comparisons = []
     failed = {}
@@ -192,6 +197,31 @@ def run_training():
 
     _report(failed, attempted=attempted, registered=registered,
             insufficient_data=insufficient_data)
+
+
+def _warn_if_stale(df: pd.DataFrame) -> None:
+    """Flags training data that has stopped moving.
+
+    The feature group silently stopped receiving rows on 2026-08-16 while the
+    hourly job stayed green, and this pipeline re-fit the same frozen rows every
+    night for 19 days without saying anything. Training on old data is still
+    worth doing, so this warns rather than fails - but it never happens
+    invisibly again. The hourly pipeline owns actually failing on staleness.
+    """
+    if df.empty:
+        return
+
+    newest = pd.to_datetime(df["event_time"], utc=True).max()
+    age_hours = (pd.Timestamp.now(tz="UTC") - newest).total_seconds() / 3600
+    print(f"Newest feature row: {newest} ({age_hours:.1f}h old).")
+
+    if age_hours > MAX_TRAINING_DATA_AGE_HOURS:
+        ci_annotations.warn(
+            f"Training data is stale: the newest feature row is {age_hours:.1f}h old "
+            f"({newest}). Models trained this run are fit on data that stops there. "
+            "Check the hourly feature pipeline and the feature group's "
+            "materialization job."
+        )
 
 
 def _report(failed: dict, attempted: int, registered: int, insufficient_data: list) -> None:

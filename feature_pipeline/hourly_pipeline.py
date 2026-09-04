@@ -19,6 +19,7 @@ non-zero when enough cities fail at once to indicate a real outage rather
 than noise (see MAX_TOLERATED_FAILURE_RATIO).
 """
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
@@ -26,7 +27,7 @@ import ci_annotations
 import config
 from feature_pipeline.feature_engineering import engineer_features
 from feature_pipeline.open_meteo_client import fetch_combined
-from hopsworks_utils import get_feature_group, retry_on_transient
+from hopsworks_utils import check_offline_store_freshness, get_feature_group, retry_on_transient
 
 # Longest lookback any derived feature needs, plus a small safety margin.
 LOOKBACK_DAYS = max(config.ROLLING_WINDOWS_HOURS + config.LAG_HOURS) // 24 + 2
@@ -35,6 +36,21 @@ LOOKBACK_DAYS = max(config.ROLLING_WINDOWS_HOURS + config.LAG_HOURS) // 24 + 2
 # Below it, the next hourly run self-heals the gap; above it, something
 # systemic is wrong (expired API key, Hopsworks outage) and should go red.
 MAX_TOLERATED_FAILURE_RATIO = 0.5
+
+# How stale the offline store may get before this job goes red.
+#
+# fg.insert() only hands rows to Kafka; a separate materialization job lands
+# them in the offline table that fg.read(), the dashboard, and training all
+# use. When that job broke on 2026-08-16, every insert kept reporting success
+# and this pipeline stayed green for 19 days while the stored data sat frozen
+# — the dashboard went blank and training quietly re-fit the same stale rows.
+# Reading back what actually landed is the only thing that can tell those two
+# states apart, so the run now verifies it and fails loudly when it doesn't.
+#
+# The threshold allows for a materialization job that lags by a few hours
+# without crying wolf; the failure this is guarding against grows without
+# bound, so it trips regardless of where in that range the bar sits.
+MAX_OFFLINE_STORE_AGE_HOURS = float(os.getenv("AQI_MAX_OFFLINE_STORE_AGE_HOURS", "12"))
 
 
 def run_hourly_update(rows_to_insert: int = 1, cities: Optional[Iterable[str]] = None) -> int:
@@ -74,8 +90,53 @@ def run_hourly_update(rows_to_insert: int = 1, cities: Optional[Iterable[str]] =
             print(f"[{city}] Hourly update failed, skipping: {type(exc).__name__}: {exc}")
             failed[city] = f"{type(exc).__name__}: {exc}"
 
+    _verify_offline_store(fg, wrote_rows=total_rows > 0)
     _report(failed, attempted=len(cities), total_rows=total_rows)
     return total_rows
+
+
+def _verify_offline_store(fg, wrote_rows: bool) -> None:
+    """Confirms the rows we just inserted are actually readable, not just accepted.
+
+    Raises if the offline store is further behind than
+    MAX_OFFLINE_STORE_AGE_HOURS, which means the materialization job is broken
+    even though every insert reported success.
+    """
+    if not wrote_rows:
+        return
+
+    try:
+        is_fresh, age_hours, newest = check_offline_store_freshness(
+            MAX_OFFLINE_STORE_AGE_HOURS, fg
+        )
+    except Exception as exc:
+        # A read-back failure is not itself evidence the write path is broken,
+        # so warn rather than fail an otherwise-successful run.
+        ci_annotations.warn(
+            f"Could not verify offline-store freshness this run "
+            f"({type(exc).__name__}: {exc}). The inserts themselves succeeded."
+        )
+        return
+
+    if newest is None:
+        raise RuntimeError(
+            "Inserts reported success but the offline store reads back empty. "
+            "The feature group's materialization job is not landing data — check "
+            "its executions in the Hopsworks UI."
+        )
+
+    print(f"Offline store newest event_time: {newest} ({age_hours:.1f}h old).")
+
+    if not is_fresh:
+        raise RuntimeError(
+            f"Inserts reported success, but the newest row readable from the "
+            f"offline store is {age_hours:.1f}h old ({newest}), past the "
+            f"{MAX_OFFLINE_STORE_AGE_HOURS:.0f}h threshold. Rows are reaching Kafka "
+            "but the 'aqi_features_1_offline_fg_materialization' job is not landing "
+            "them — check its executions in the Hopsworks UI. The dashboard and "
+            "training pipeline both read this store, so both are running on stale "
+            "data until it is fixed."
+        )
 
 
 def _report(failed: dict, attempted: int, total_rows: int) -> None:
