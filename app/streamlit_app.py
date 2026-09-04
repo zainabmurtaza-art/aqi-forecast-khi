@@ -18,10 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 import config
+from app import theme
 from app.data_loader import get_horizon_predictions, load_models, load_recent_actual_features
 from app.ui_components import (
     render_aqi_key,
     render_alert_banner,
+    render_current_readings,
     render_forecast_chart,
     render_manual_prediction_form,
     render_shap_panel,
@@ -29,25 +31,19 @@ from app.ui_components import (
 )
 
 st.set_page_config(page_title="AQI Forecast — Pakistan", layout="wide")
+theme.apply_theme()
 
-# Streamlit's selectbox is a searchable combobox that keeps text-input focus
-# after a selection, which otherwise leaves a blinking text cursor sitting in
-# the sidebar.
-st.markdown(
-    """
-    <style>
-    [data-testid="stSelectbox"] input {
-        caret-color: transparent !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+view = st.sidebar.radio(
+    "View", ["Current Readings", "Forecast", "Manual Prediction", "AQI Key"]
 )
 
-view = st.sidebar.radio("View", ["Forecast", "Manual Prediction", "AQI Key"])
-
 if view == "AQI Key":
-    st.title("US AQI Color Key")
+    st.title("US AQI Colour Key")
+    st.markdown(
+        '<div class="aqi-caption">The category bands every reading and forecast '
+        "on this dashboard is coloured against.</div>",
+        unsafe_allow_html=True,
+    )
     render_aqi_key()
     st.stop()
 
@@ -61,6 +57,36 @@ selected_city = st.sidebar.selectbox(
     index=city_keys.index(default_city),
 )
 city_label = config.CITIES[selected_city]["label"]
+
+if view == "Current Readings":
+    st.title(f"Current Readings — {city_label}")
+    st.markdown(
+        '<div class="aqi-caption">Today&rsquo;s air quality alongside every '
+        "feature the forecast models read, as most recently recorded.</div>",
+        unsafe_allow_html=True,
+    )
+    # Deliberately needs neither the model registry nor Open-Meteo: this page
+    # keeps working during a model-registry or forecast-API outage, which is
+    # exactly when someone is most likely to want the raw current numbers.
+    with st.spinner(f"Loading the latest readings for {city_label}..."):
+        try:
+            readings_df = load_recent_actual_features(selected_city)
+        except Exception:
+            st.error(
+                "Couldn't reach the Hopsworks feature store right now. "
+                "Please reload in a minute or two."
+            )
+            st.stop()
+
+    if readings_df.empty:
+        st.error(
+            f"No feature data found in Hopsworks yet for {city_label}. Run "
+            "`python -m feature_pipeline.backfill_pipeline` first."
+        )
+        st.stop()
+
+    render_current_readings(readings_df, city_label)
+    st.stop()
 
 if view == "Manual Prediction":
     st.title(f"Manual AQI Prediction — {city_label}")
@@ -78,6 +104,12 @@ if view == "Manual Prediction":
     st.stop()
 
 st.title(f"Air Quality Forecast — {city_label}")
+st.markdown(
+    '<div class="aqi-caption">Three-day US AQI outlook, with the recent trend '
+    "behind it. See <strong>Current Readings</strong> for today&rsquo;s full "
+    "feature detail.</div>",
+    unsafe_allow_html=True,
+)
 
 with st.spinner(f"Loading models and latest data for {city_label}..."):
     try:
@@ -121,9 +153,12 @@ with col2:
 
 st.divider()
 
-st.info(
-    "Pick a forecast horizon below to see a SHAP breakdown of which pollutant, weather, "
-    "and time features pushed that specific day's prediction up or down."
+st.subheader("Why the model forecast this")
+st.markdown(
+    '<div class="aqi-caption">Pick a horizon to see a SHAP breakdown of which '
+    "pollutant, weather, and time features pushed that day&rsquo;s prediction "
+    "up or down.</div>",
+    unsafe_allow_html=True,
 )
 
 horizon_choice = st.selectbox(

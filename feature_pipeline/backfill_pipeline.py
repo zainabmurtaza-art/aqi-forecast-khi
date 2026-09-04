@@ -22,7 +22,7 @@ from typing import Iterable, Optional
 import config
 from feature_pipeline.feature_engineering import engineer_features
 from feature_pipeline.open_meteo_client import fetch_combined
-from hopsworks_utils import get_feature_group
+from hopsworks_utils import get_feature_group, retry_on_transient
 
 MAX_BACKFILL_DAYS = 1825  # 5 years
 
@@ -39,7 +39,7 @@ def run_backfill(days: int = config.BACKFILL_DAYS, cities: Optional[Iterable[str
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=days)
 
-    fg = get_feature_group()
+    fg = retry_on_transient(get_feature_group, description="Fetch feature group")
     total_rows = 0
     failed_cities = []
     for city in cities:
@@ -49,7 +49,12 @@ def run_backfill(days: int = config.BACKFILL_DAYS, cities: Optional[Iterable[str
             print(f"[{city}] Fetched {len(raw)} raw hourly rows.")
 
             features = engineer_features(raw)
-            fg.insert(features)
+            # A transient 5xx here would otherwise throw away a full history
+            # fetch and force the whole city to be re-run by hand.
+            retry_on_transient(
+                lambda rows=features: fg.insert(rows),
+                description=f"[{city}] backfill insert",
+            )
             print(f"[{city}] Inserted {len(features)} rows into Hopsworks feature group "
                   f"'{config.FEATURE_GROUP_NAME}' (v{config.FEATURE_GROUP_VERSION}).")
             total_rows += len(features)

@@ -20,15 +20,14 @@ Run by CI: .github/workflows/daily_training_pipeline.yml (daily cron)
 
 import shutil
 import tempfile
-import time
 from pathlib import Path
 
 import joblib
 import pandas as pd
-import requests
 
+import ci_annotations
 import config
-from hopsworks_utils import get_model_registry
+from hopsworks_utils import get_model_registry, reset_project, retry_on_transient
 from training_pipeline.build_dataset import (
     build_training_data,
     chronological_train_test_split,
@@ -40,25 +39,16 @@ from training_pipeline.models import DEPLOYABLE_MODELS, MODEL_FACTORY
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 SUMMARY_CSV_PATH = OUTPUT_DIR / "training_summary.csv"
 
-# Each register_model() call re-logs-in to Hopsworks (get_model_registry()
-# with no cached project) and does several HTTP round trips to upload +
-# register a model; a single transient reset anywhere in that chain
-# shouldn't fail the whole run when the equivalent Open-Meteo calls already
-# tolerate the same kind of blip via urllib3 retries.
-_RETRYABLE_EXCEPTIONS = (requests.exceptions.RequestException, ConnectionError, TimeoutError, OSError)
+# One run registers a model for every (city, horizon) pair, each doing several
+# HTTP round trips to upload and register. Retrying is handled by
+# hopsworks_utils.retry_on_transient, whose policy — unlike the
+# requests-only list this module used to keep — also covers Hopsworks'
+# RestAPIError, the class its API raises for 5xx responses.
 
-
-def _retry_transient(fn, retries=3, backoff_seconds=5):
-    for attempt in range(1, retries + 1):
-        try:
-            return fn()
-        except _RETRYABLE_EXCEPTIONS as exc:
-            if attempt == retries:
-                raise
-            print(f"Transient error on attempt {attempt}/{retries}: {exc}. "
-                  f"Retrying in {backoff_seconds}s...")
-            time.sleep(backoff_seconds)
-            backoff_seconds *= 2
+# Fail the run only once more than this share of (city, horizon) pairs failed.
+# Training reruns daily and re-registers every pair, so a couple of pairs
+# lost to a blip are replaced within a day; a majority failing is systemic.
+MAX_TOLERATED_FAILURE_RATIO = 0.25
 
 
 def train_and_select_best(X_train, y_train, X_test, y_test):
@@ -118,16 +108,27 @@ def register_model(model, registry_name: str, metrics: dict, city: str):
             # retry from a clean directory.
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return _retry_transient(_attempt)
+    return retry_on_transient(
+        _attempt,
+        description=f"Register '{registry_name}'",
+        # A retry means the previous attempt's connection just failed us;
+        # drop the cached login so the next one reconnects from scratch.
+        on_retry=reset_project,
+    )
 
 
 def run_training():
-    df = build_training_data()
+    df = retry_on_transient(build_training_data, description="Read feature group")
     print(f"Loaded {len(df)} feature rows with horizon targets attached "
           f"across {df['city'].nunique()} cities.")
 
     all_comparisons = []
-    failed = []
+    failed = {}
+    attempted = 0
+    registered = 0
+    # Pairs with too little usable history yet: a backfill gap, not a fault,
+    # so they're reported separately and never fail the run on their own.
+    insufficient_data = []
 
     for city in config.CITIES:
         city_row_count = int((df["city"] == city).sum())
@@ -138,6 +139,7 @@ def run_training():
 
         for horizon in config.FORECAST_HORIZONS_HOURS:
             target_col = target_column_name(horizon)
+            attempted += 1
             try:
                 X_train, y_train, X_test, y_test = chronological_train_test_split(
                     df, target_col, city
@@ -150,6 +152,7 @@ def run_training():
                         "rows with missing lag/rolling features or target — skipping this "
                         "horizon until more history has been backfilled/collected."
                     )
+                    insufficient_data.append(f"{city}/{target_col}")
                     continue
 
                 best_name, best_model, best_metrics, comparison = train_and_select_best(
@@ -168,12 +171,14 @@ def run_training():
                     city=city, horizon=horizon // 24
                 )
                 register_model(best_model, registry_name, best_metrics, city)
+                registered += 1
                 print(f"[{city}/{target_col}] Registered to Hopsworks Model Registry as '{registry_name}'.")
             except Exception as exc:
                 # Don't let one bad (city, horizon) pair abort the whole run and
                 # lose every other city's results along with it.
-                print(f"[{city}/{target_col}] Training failed, skipping: {exc}")
-                failed.append(f"{city}/{target_col}")
+                print(f"[{city}/{target_col}] Training failed, skipping: "
+                      f"{type(exc).__name__}: {exc}")
+                failed[f"{city}/{target_col}"] = f"{type(exc).__name__}: {exc}"
 
     if all_comparisons:
         summary = pd.concat(all_comparisons, ignore_index=True)
@@ -185,8 +190,46 @@ def run_training():
     else:
         print("\nNo city/horizon had enough rows to train on this run.")
 
-    if failed:
-        raise RuntimeError(f"Training failed for: {', '.join(failed)}.")
+    _report(failed, attempted=attempted, registered=registered,
+            insufficient_data=insufficient_data)
+
+
+def _report(failed: dict, attempted: int, registered: int, insufficient_data: list) -> None:
+    """Logs the outcome, and decides whether a partial failure fails the run."""
+    print(f"\nTraining finished: {registered}/{attempted} (city, horizon) pairs "
+          f"registered, {len(insufficient_data)} skipped for insufficient history, "
+          f"{len(failed)} failed.")
+
+    if insufficient_data:
+        ci_annotations.warn(
+            f"{len(insufficient_data)} (city, horizon) pairs had too little usable "
+            f"history to train: {', '.join(insufficient_data)}. Run "
+            "feature_pipeline.backfill_pipeline for those cities."
+        )
+
+    if not failed:
+        return
+
+    detail = "; ".join(f"{pair} ({reason})" for pair, reason in failed.items())
+    ci_annotations.write_summary(
+        f"### Daily training pipeline\n\n"
+        f"- Pairs registered: **{registered}/{attempted}**\n"
+        f"- Skipped (insufficient history): {len(insufficient_data)}\n"
+        f"- Failed: {', '.join(failed)}\n"
+    )
+
+    # A run that registered nothing has nothing to show for itself, whatever
+    # the ratio says — that is a failure even if every pair "only" errored once.
+    if registered == 0 or len(failed) > attempted * MAX_TOLERATED_FAILURE_RATIO:
+        raise RuntimeError(
+            f"Training failed for {len(failed)}/{attempted} (city, horizon) pairs "
+            f"(registered {registered}), which is past the tolerated threshold: {detail}."
+        )
+
+    ci_annotations.warn(
+        f"Training skipped {len(failed)}/{attempted} (city, horizon) pairs this run "
+        f"({', '.join(failed)}); tomorrow's run re-registers them. Detail: {detail}"
+    )
 
 
 if __name__ == "__main__":

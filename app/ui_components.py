@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Dashboard panels: alert banner, forecast chart, trend chart, SHAP panel."""
+"""Dashboard panels: current readings, alert banner, forecast chart, trend
+chart, SHAP panel."""
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -10,6 +11,8 @@ from sklearn.linear_model import Ridge
 
 from xgboost import XGBRegressor
 
+import config
+from app import theme
 from training_pipeline.build_dataset import FEATURE_COLUMNS
 from training_pipeline.models import PersistenceRegressor
 
@@ -33,19 +36,99 @@ def _aqi_category(aqi_value: float) -> tuple:
     return AQI_KEY_RANGES[-1][2], AQI_KEY_RANGES[-1][3]
 
 
+def _to_local(series: pd.Series) -> pd.Series:
+    """UTC event times -> the project's local timezone. Everything is stored
+    and modelled in UTC, but a reader in Pakistan reads 'today' in PKT, so
+    every displayed timestamp is converted at the edge rather than earlier."""
+    times = pd.to_datetime(series, utc=True)
+    try:
+        return times.dt.tz_convert(config.TIMEZONE)
+    except Exception:
+        # An unrecognised tz name shouldn't blank the whole dashboard.
+        return times
+
+
+# Units for the model's raw feature columns, shown beside each value in the
+# Current Readings panel. Keys match FEATURE_COLUMNS exactly.
+FEATURE_UNITS = {
+    "pm10": "µg/m³",
+    "pm2_5": "µg/m³",
+    "carbon_monoxide": "µg/m³",
+    "nitrogen_dioxide": "µg/m³",
+    "sulphur_dioxide": "µg/m³",
+    "ozone": "µg/m³",
+    "us_aqi": "AQI",
+    "temperature_2m": "°C",
+    "relative_humidity_2m": "%",
+    "surface_pressure": "hPa",
+    "wind_speed_10m": "km/h",
+    "aqi_change_rate": "AQI/h",
+    "aqi_roll_mean_3h": "AQI",
+    "aqi_roll_mean_24h": "AQI",
+    "aqi_lag_24h": "AQI",
+    "aqi_lag_48h": "AQI",
+}
+
+# Human-readable names, grouped into the cards the panel renders. Between them
+# these groups cover every entry in FEATURE_COLUMNS, so "all feature readings"
+# on the panel means literally all of the model's inputs.
+READING_GROUPS = [
+    ("Pollutants", [
+        ("pm2_5", "PM2.5"),
+        ("pm10", "PM10"),
+        ("carbon_monoxide", "Carbon monoxide"),
+        ("nitrogen_dioxide", "Nitrogen dioxide"),
+        ("sulphur_dioxide", "Sulphur dioxide"),
+        ("ozone", "Ozone"),
+    ]),
+    ("Weather", [
+        ("temperature_2m", "Temperature"),
+        ("relative_humidity_2m", "Relative humidity"),
+        ("surface_pressure", "Surface pressure"),
+        ("wind_speed_10m", "Wind speed"),
+    ]),
+    ("Recent AQI history (derived)", [
+        ("aqi_change_rate", "Change vs. last hour"),
+        ("aqi_roll_mean_3h", "3-hour average"),
+        ("aqi_roll_mean_24h", "24-hour average"),
+        ("aqi_lag_24h", "24 hours ago"),
+        ("aqi_lag_48h", "48 hours ago"),
+    ]),
+]
+
+# Time features are formatted rather than printed raw (a "day_of_week" of 2
+# means nothing to a reader), so they get their own renderer below.
+_WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                  "Friday", "Saturday", "Sunday"]
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December"]
+
+
+def _format_value(column: str, value) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    if column in ("carbon_monoxide", "surface_pressure"):
+        return f"{float(value):,.0f}"
+    if column == "aqi_change_rate":
+        return f"{float(value):+.1f}"
+    if column in ("us_aqi", "relative_humidity_2m"):
+        return f"{float(value):.0f}"
+    return f"{float(value):.1f}"
+
+
 def render_aqi_key():
     """Static US AQI color/range legend, shown instead of the forecast charts
     when the sidebar is set to the 'AQI Key' view."""
-    for lo, hi, label, color in AQI_KEY_RANGES:
-        st.markdown(
-            f"""
-            <div style="background-color:{color}; padding:1rem; border-radius:0.5rem;
-                        color:white; margin-bottom:0.5rem;">
-                <strong>{lo}-{hi}: {label}</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    rows = "".join(
+        f'<div style="background-color:{color}; padding:0.85rem 1.1rem; '
+        f'border-radius:5px; color:white; margin-bottom:0.5rem; '
+        f'display:flex; justify-content:space-between; align-items:baseline;">'
+        f'<strong style="font-size:1.05rem;">{label}</strong>'
+        f'<span style="opacity:0.92;">{lo}&ndash;{hi}</span>'
+        f"</div>"
+        for lo, hi, label, color in AQI_KEY_RANGES
+    )
+    st.markdown(theme.card("US AQI categories", rows), unsafe_allow_html=True)
 
 
 def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
@@ -59,9 +142,19 @@ def render_alert_banner(current_aqi: float, predictions: pd.DataFrame):
 
     st.markdown(
         f"""
-        <div style="background-color:{color}; padding:1rem; border-radius:0.5rem; color:white;">
-            <strong>AQI status: {label}</strong> — current {current_aqi:.0f},
-            worst forecast over next 3 days: {worst_forecast:.0f} (US AQI scale)
+        <div class="aqi-hero" style="background-color:{color};">
+            <div>
+                <div class="aqi-hero-label">Current US AQI</div>
+                <div class="aqi-hero-value">{current_aqi:.0f}</div>
+            </div>
+            <div>
+                <div class="aqi-hero-label">Status</div>
+                <div class="aqi-hero-category">{label}</div>
+            </div>
+            <div class="aqi-hero-meta">
+                <div class="aqi-hero-label">Worst forecast, next 3 days</div>
+                <div class="aqi-hero-category">{worst_forecast:.0f}</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -83,6 +176,10 @@ def render_forecast_chart(predictions: pd.DataFrame):
             x=[f"+{d} day" for d in predictions["horizon_days"]],
             y=values,
             marker_color=[_aqi_category(v)[1] for v in values],
+            marker_line=dict(color=theme.NAVY, width=1),
+            text=[f"{v:.0f}" for v in values],
+            textposition="outside",
+            textfont=dict(family=theme.SERIF_STACK, color=theme.NAVY, size=14),
         )
     )
     fig.update_layout(
@@ -90,15 +187,143 @@ def render_forecast_chart(predictions: pd.DataFrame):
         yaxis_title="Predicted US AQI",
         yaxis_range=y_range,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(theme.style_figure(fig), use_container_width=True)
 
 
 def render_trend_chart(actual_df: pd.DataFrame):
+    local = _to_local(actual_df["event_time"])
     fig = go.Figure(
-        go.Scatter(x=actual_df["event_time"], y=actual_df["us_aqi"], mode="lines")
+        go.Scatter(
+            x=local,
+            y=actual_df["us_aqi"],
+            mode="lines",
+            line=dict(color=theme.MAGENTA, width=2),
+            fill="tozeroy",
+            fillcolor="rgba(123, 45, 94, 0.10)",
+        )
     )
-    fig.update_layout(title="Recent AQI trend", yaxis_title="US AQI", xaxis_title="Time (UTC)")
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        title="Recent AQI trend",
+        yaxis_title="US AQI",
+        xaxis_title=f"Local time ({config.TIMEZONE})",
+    )
+    st.plotly_chart(theme.style_figure(fig), use_container_width=True)
+
+
+def render_current_readings(actual_df: pd.DataFrame, city_label: str):
+    """Every model feature as observed right now, next to the current AQI.
+
+    Reads the newest row the feature store holds for this city (written by the
+    hourly pipeline) and lays its features out in grouped cards, plus a
+    summary of how AQI has moved across the current local day. Falls back
+    gracefully — and says so — when the newest stored row predates today,
+    which happens if the hourly pipeline is behind.
+    """
+    if actual_df.empty:
+        st.warning("No stored readings available for this city yet.")
+        return
+
+    df = actual_df.sort_values("event_time").reset_index(drop=True)
+    local_times = _to_local(df["event_time"])
+    latest = df.iloc[-1]
+    latest_local = local_times.iloc[-1]
+
+    today = pd.Timestamp.now(tz=latest_local.tz).date() if latest_local.tz else latest_local.date()
+    today_mask = local_times.dt.date == today
+    today_df = df[today_mask]
+    is_stale = today_df.empty
+
+    if is_stale:
+        # Nothing from today yet: report the latest day we do have, clearly
+        # labelled, rather than showing an empty panel.
+        fallback_day = latest_local.date()
+        today_df = df[local_times.dt.date == fallback_day]
+        day_label = fallback_day.strftime("%A, %d %B %Y")
+    else:
+        day_label = today.strftime("%A, %d %B %Y")
+
+    current_aqi = float(latest["us_aqi"])
+    category, color = _aqi_category(current_aqi)
+
+    st.markdown(
+        f"""
+        <div class="aqi-hero" style="background-color:{color};">
+            <div>
+                <div class="aqi-hero-label">Current US AQI &mdash; {city_label}</div>
+                <div class="aqi-hero-value">{current_aqi:.0f}</div>
+            </div>
+            <div>
+                <div class="aqi-hero-label">Category</div>
+                <div class="aqi-hero-category">{category}</div>
+            </div>
+            <div class="aqi-hero-meta">
+                <div class="aqi-hero-label">Observation</div>
+                <div class="aqi-hero-category">{latest_local.strftime('%H:%M')}</div>
+                <div>{latest_local.strftime('%d %b %Y')} ({config.TIMEZONE})</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if is_stale:
+        st.warning(
+            f"The feature store has no readings for today yet — showing the most "
+            f"recent stored hour ({latest_local.strftime('%d %b %Y, %H:%M')}). "
+            "The hourly pipeline may be running behind."
+        )
+
+    # --- the day's AQI envelope -------------------------------------------
+    day_aqi = today_df["us_aqi"].dropna()
+    if not day_aqi.empty:
+        summary = theme.reading_grid([
+            theme.reading("Readings so far", f"{len(day_aqi)}", "hours"),
+            theme.reading("Lowest", _format_value("us_aqi", day_aqi.min()), "AQI"),
+            theme.reading("Average", _format_value("us_aqi", day_aqi.mean()), "AQI"),
+            theme.reading("Highest", _format_value("us_aqi", day_aqi.max()), "AQI"),
+        ])
+        st.markdown(
+            theme.card(f"Air quality on {day_label}", summary), unsafe_allow_html=True
+        )
+
+    # --- every model feature, grouped -------------------------------------
+    for title, columns in READING_GROUPS:
+        rows = [
+            theme.reading(label, _format_value(col, latest.get(col)), FEATURE_UNITS.get(col, ""))
+            for col, label in columns
+            if col in latest.index
+        ]
+        if rows:
+            st.markdown(theme.card(title, theme.reading_grid(rows)), unsafe_allow_html=True)
+
+    # --- time features, formatted for a human ------------------------------
+    time_rows = []
+    if "hour" in latest.index and not pd.isna(latest["hour"]):
+        time_rows.append(theme.reading("Hour of day", f"{int(latest['hour']):02d}:00", "UTC"))
+    if "day_of_week" in latest.index and not pd.isna(latest["day_of_week"]):
+        time_rows.append(
+            theme.reading("Day of week", _WEEKDAY_NAMES[int(latest["day_of_week"]) % 7])
+        )
+    if "day" in latest.index and not pd.isna(latest["day"]):
+        time_rows.append(theme.reading("Day of month", f"{int(latest['day'])}"))
+    if "month" in latest.index and not pd.isna(latest["month"]):
+        time_rows.append(theme.reading("Month", _MONTH_NAMES[(int(latest["month"]) - 1) % 12]))
+    if "is_weekend" in latest.index and not pd.isna(latest["is_weekend"]):
+        time_rows.append(
+            theme.reading("Weekend", "Yes" if int(latest["is_weekend"]) else "No")
+        )
+    if time_rows:
+        st.markdown(
+            theme.card("Time features (as the model sees them)", theme.reading_grid(time_rows)),
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="aqi-caption">Readings come from the Hopsworks feature store, '
+        "written hourly by the feature pipeline. These are the exact inputs the "
+        "forecast models consume.</div>",
+        unsafe_allow_html=True,
+    )
 
 
 FEATURE_DESCRIPTIONS = {
@@ -155,9 +380,23 @@ def render_shap_panel(
     shap_values = explainer.shap_values(X)
     contributions = pd.Series(shap_values[0], index=FEATURE_COLUMNS).sort_values()
 
-    fig = go.Figure(go.Bar(x=contributions.values, y=contributions.index, orientation="h"))
-    fig.update_layout(title="Feature contribution to this prediction", xaxis_title="SHAP value")
-    st.plotly_chart(fig, use_container_width=True)
+    # Navy for features pushing the forecast down, magenta for those pushing
+    # it up - the same two-colour vocabulary the rest of the page uses.
+    fig = go.Figure(
+        go.Bar(
+            x=contributions.values,
+            y=contributions.index,
+            orientation="h",
+            marker_color=[
+                theme.MAGENTA if v >= 0 else theme.NAVY_SOFT for v in contributions.values
+            ],
+        )
+    )
+    fig.update_layout(
+        title="Feature contribution to this prediction",
+        xaxis_title="SHAP value (negative lowers the forecast, positive raises it)",
+    )
+    st.plotly_chart(theme.style_figure(fig, height=520), use_container_width=True)
 
     with st.expander("What do these feature names mean?"):
         for col in FEATURE_COLUMNS:
@@ -323,9 +562,15 @@ def render_manual_prediction_form(models: dict):
 
         st.markdown(
             f"""
-            <div style="background-color:{color}; padding:1.5rem; border-radius:0.5rem; color:white;">
-                <strong style="font-size:1.3rem;">Predicted US AQI: {predicted:.0f}</strong><br/>
-                Category: {label}
+            <div class="aqi-hero" style="background-color:{color};">
+                <div>
+                    <div class="aqi-hero-label">Predicted US AQI (+{horizon_choice} day)</div>
+                    <div class="aqi-hero-value">{predicted:.0f}</div>
+                </div>
+                <div>
+                    <div class="aqi-hero-label">Category</div>
+                    <div class="aqi-hero-category">{label}</div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,

@@ -1,0 +1,13 @@
+# Base theme for the dashboard. This sets the colours Streamlit uses for its
+# own widgets (inputs, sidebar, selectboxes); app/theme.py layers the matching
+# typography, card styling, and Plotly styling on top so the built-in widgets
+# and the custom panels stay in step.
+#
+# Palette: light beige/cream ground, navy text, deep magenta accent.
+[theme]
+base = "light"
+primaryColor = "#7B2D5E"
+backgroundColor = "#FAF5E6"
+secondaryBackgroundColor = "#F2E7CE"
+textColor = "#1B2A4A"
+font = "serif"
