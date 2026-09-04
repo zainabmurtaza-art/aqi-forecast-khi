@@ -446,17 +446,22 @@ FEATURE_DESCRIPTIONS = {
 def _metric_quality(r2) -> tuple:
     """(verdict, plain-language meaning) for an R2 value.
 
-    R2 below 0 is not a rounding artefact — it means the model does worse on
-    held-out data than always guessing the average would. That is worth saying
-    outright rather than presenting a negative number without comment.
+    R2 is not a measure of error size — it is error size *relative to how much
+    the target actually moved* during the hold-out window. The same model with
+    identical MAE can score well or badly depending on that window, so a
+    negative score is reported alongside that caveat rather than as a flat
+    verdict on the model's accuracy. Check MAE for the absolute miss.
     """
     if r2 is None:
         return "unknown", "No score was recorded for this model."
     if r2 < 0:
-        return "worse than guessing the average", (
-            "A negative R² means this model's held-out predictions were less accurate "
-            "than simply always predicting the average AQI. Treat this horizon's "
-            "forecast with caution."
+        return "did not beat the hold-out average", (
+            "A negative R² means that over the test window, this model's predictions "
+            "were further from the truth than simply always predicting that window's "
+            "average AQI would have been. That often says as much about the window as "
+            "the model: when AQI barely moves for weeks, there is almost no variation "
+            "to explain, and even small errors score badly. Look at MAE above for how "
+            "far off the forecasts actually were."
         )
     if r2 < 0.3:
         return "weak", "The model explains only a small share of the variation in AQI."
@@ -506,12 +511,21 @@ def render_model_metrics(models: dict, metrics_df: pd.DataFrame, city_label: str
     with st.expander("What do RMSE, MAE and R² mean?"):
         st.markdown(
             "- **MAE (mean absolute error)** — the average size of the miss, in AQI points. "
-            "An MAE of 5 means the forecast is typically about 5 AQI points off.\n"
-            "- **RMSE (root mean squared error)** — the same idea, but large misses count "
-            "for much more. RMSE well above MAE means the model is occasionally badly wrong.\n"
-            "- **R² (coefficient of determination)** — the share of the variation in AQI the "
-            "model explains. 1.0 is perfect, 0 is no better than always guessing the "
-            "average, and below 0 is *worse* than that.\n\n"
+            "An MAE of 5 means the forecast is typically about 5 AQI points off. This is "
+            "the most direct measure of accuracy here.\n"
+            "- **RMSE (root mean squared error)** — the same idea, but it squares each miss "
+            "first, so occasional large errors weigh far more than several small ones.\n"
+            "- **R² (coefficient of determination)** — *not* a measure of error size. It "
+            "compares the model's error against how much AQI actually varied during the "
+            "test window. 1.0 is perfect; 0 means no better than always predicting that "
+            "window's average; below 0 means worse than that.\n\n"
+            "**RMSE is always at least as large as MAE** — that is arithmetic, not a "
+            "warning sign, and they are equal only if every miss is exactly the same size. "
+            "What is worth watching is the *ratio*: around 1.25 is typical, while a much "
+            "higher ratio points to a few unusually large misses dragging RMSE up.\n\n"
+            "A low or negative R² alongside a small MAE usually means the test window was "
+            "unusually flat — with little variation to explain, the bar for beating its "
+            "average is high even when the forecasts themselves are close.\n\n"
             "All three are measured on a chronological hold-out — the most recent slice of "
             "history, which the model never saw during training."
         )
