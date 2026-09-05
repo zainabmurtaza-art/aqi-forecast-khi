@@ -123,6 +123,29 @@ def _css() -> str:
         caret-color: transparent !important;
     }}
 
+    /* The city dropdown opens to a fixed 300px, measured from wherever the
+       input sits. On a short window that runs past the bottom of the viewport -
+       at 620px tall it overflowed by 30px - taking the last cities and the
+       lower half of its own scrollbar off-screen. The popup is portaled out of
+       .stApp and positioned, so the page cannot be scrolled to reach them.
+       Capping against viewport height keeps the whole list reachable; it just
+       shows fewer rows at once on a small screen.
+
+       These selectors are deliberately un-prefixed: the popup is portaled to
+       <body>, outside .stApp, so a .stApp-scoped rule would never match it.
+       The scrolling element is the [role="listbox"] *inside* the virtual
+       dropdown wrapper — both need the same cap, or the inner list keeps its
+       own 300px and is clipped by the shortened wrapper. */
+    [data-testid="stSelectboxVirtualDropdown"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+    div[data-baseweb="popover"] [role="listbox"] {{
+        max-height: min(300px, 35vh) !important;
+    }}
+    [data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+    div[data-baseweb="popover"] [role="listbox"] {{
+        overflow-y: auto !important;
+    }}
+
     /* Cards ------------------------------------------------------------ */
     .aqi-card {{
         background: {CARD_BG};
