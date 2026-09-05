@@ -255,18 +255,29 @@ VIEW_FUNCTIONS = {
     "AQI Copilot": view_copilot,
 }
 
-# Streamlit leaves the previous run's elements on screen until new ones replace
-# them, position by position. A page that loads slowly therefore draws its own
-# title first and leaves the *previous* page's body sitting underneath the
-# spinner — visibly, the Forecast banner showing through "Loading models for
-# Karachi...". Holding the whole body in a single slot lets it be cleared the
-# moment the selection changes, before any slow work starts, so the reader sees
-# an empty panel and a spinner instead of two pages overlapping.
+# Navigating to a page that loads slowly used to leave the *previous* page's
+# body on screen underneath the new page's title and spinner — the Forecast
+# banner showing through "Loading models for Karachi...".
+#
+# Streamlit reuses a container across runs and replaces its children by index,
+# pruning any surplus only once the script finishes. So a new view that has
+# written two elements so far sits on top of the old view's remaining ten.
+# Clearing the slot in the same run does not help: re-entering the container
+# immediately re-establishes it at the same path, inheriting that child list.
+#
+# The clear has to be the last thing a run does, so the frontend prunes before
+# the slow work starts. Hence two passes: this run empties the slot and stops;
+# the rerun draws the new page from a blank slate.
 body = st.empty()
 selection = (view, selected_city)
-if st.session_state.get("_rendered_selection") != selection:
-    body.empty()
+
+if "_rendered_selection" not in st.session_state:
+    # First load — nothing on screen to clear, so don't spend a rerun on it.
     st.session_state["_rendered_selection"] = selection
+elif st.session_state["_rendered_selection"] != selection:
+    st.session_state["_rendered_selection"] = selection
+    body.empty()
+    st.rerun()
 
 with body.container():
     VIEW_FUNCTIONS[view]()
