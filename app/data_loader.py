@@ -16,7 +16,12 @@ import config
 import hopsworks_utils
 from feature_pipeline.feature_engineering import engineer_features
 from feature_pipeline.open_meteo_client import fetch_combined
-from training_pipeline.build_dataset import FEATURE_COLUMNS
+from training_pipeline.build_dataset import (
+    FEATURE_COLUMNS,
+    TARGET_WEATHER_COLUMNS,
+    feature_columns,
+    target_weather_column_name,
+)
 
 RAW_COLUMNS = [
     "city",
@@ -158,23 +163,60 @@ def build_inference_dataset(city: str) -> pd.DataFrame:
     return engineer_features(combined)
 
 
+def model_feature_columns(model, horizon: int) -> list:
+    """The exact feature list `model` was fitted on.
+
+    Read off the fitted estimator rather than assumed, so a model registered
+    before target-hour weather existed keeps working against the current code
+    instead of erroring on an unexpected column count. Falls back to this
+    horizon's full list for estimators that don't record their inputs (the
+    persistence baseline).
+    """
+    names = getattr(model, "feature_names_in_", None)
+    if names is None:
+        return feature_columns(horizon)
+    return list(names)
+
+
+def build_features_for_horizon(engineered: pd.DataFrame, row_index, horizon: int) -> pd.DataFrame:
+    """One row of model inputs: the row's own features plus the weather at the
+    hour being predicted, which is simply the engineered row at that hour."""
+    candidate = engineered.loc[[row_index]].copy()
+
+    source_time = candidate["event_time"].iloc[0]
+    target_time = source_time + pd.Timedelta(hours=horizon)
+    at_target = engineered[engineered["event_time"] == target_time]
+
+    for column in TARGET_WEATHER_COLUMNS:
+        name = target_weather_column_name(column, horizon)
+        candidate[name] = (
+            float(at_target[column].iloc[0]) if not at_target.empty else float("nan")
+        )
+
+    return candidate
+
+
 def get_horizon_predictions(models: dict, city: str) -> pd.DataFrame:
     engineered = build_inference_dataset(city)
     now = pd.Timestamp.now(tz="UTC").floor("h")
 
     rows = []
     for horizon in config.FORECAST_HORIZONS_HOURS:
-        target_time = now + pd.Timedelta(hours=horizon)
-        nearest_idx = (engineered["event_time"] - target_time).abs().idxmin()
-        candidate = engineered.loc[[nearest_idx]]
+        # The row we predict FROM is now; the row we predict FOR is now+horizon.
+        # Target-hour weather is taken from the forecast rows already stitched
+        # into `engineered` by build_inference_dataset().
+        nearest_idx = (engineered["event_time"] - now).abs().idxmin()
+        candidate = build_features_for_horizon(engineered, nearest_idx, horizon)
 
-        X = candidate[FEATURE_COLUMNS]
+        X = candidate[model_feature_columns(models[horizon], horizon)]
         predicted = float(models[horizon].predict(X)[0])
 
         rows.append(
             {
                 "horizon_days": horizon // 24,
-                "event_time": candidate["event_time"].iloc[0],
+                # The hour being forecast, not the hour forecast from.
+                "event_time": candidate["event_time"].iloc[0]
+                + pd.Timedelta(hours=horizon),
                 "predicted_us_aqi": predicted,
                 "feature_row": candidate,
             }

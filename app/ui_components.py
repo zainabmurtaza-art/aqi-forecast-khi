@@ -13,8 +13,12 @@ from xgboost import XGBRegressor
 
 import config
 from app import copilot, health_guidance, theme
-from app.data_loader import algorithm_label
-from training_pipeline.build_dataset import FEATURE_COLUMNS
+from app.data_loader import algorithm_label, model_feature_columns
+from training_pipeline.build_dataset import (
+    FEATURE_COLUMNS,
+    TARGET_WEATHER_COLUMNS,
+    target_weather_column_name,
+)
 from training_pipeline.models import PersistenceRegressor
 
 # Reader-facing names for the model's feature columns, used anywhere a feature
@@ -528,12 +532,66 @@ def render_model_metrics(models: dict, metrics_df: pd.DataFrame, city_label: str
     )
 
 
+def _split_target_weather(column: str):
+    """('temperature_2m', 3) for 'temperature_2m_at_t_plus_3', else (col, None)."""
+    for base in TARGET_WEATHER_COLUMNS:
+        for horizon in config.FORECAST_HORIZONS_HOURS:
+            if column == target_weather_column_name(base, horizon):
+                return base, horizon // 24
+    return column, None
+
+
+def _plain_name(column: str) -> str:
+    base, days = _split_target_weather(column)
+    label = SHAP_PLAIN_NAMES.get(base, base)
+    if days is None:
+        return label
+    return f"{label} forecast for the day being predicted"
+
+
+def _feature_description(column: str) -> str:
+    base, days = _split_target_weather(column)
+    described = FEATURE_DESCRIPTIONS.get(base, "")
+    if days is None:
+        return described
+    return (
+        f"{described} — but for the hour {days} day{'s' if days > 1 else ''} ahead "
+        "that is being forecast, taken from the weather forecast rather than today."
+    )
+
+
+def _target_weather_unit(column: str) -> str:
+    base, _ = _split_target_weather(column)
+    return FEATURE_UNITS.get(base, "")
+
+
+def _shap_background(background_df: pd.DataFrame, columns: list, horizon: int) -> pd.DataFrame:
+    """A background sample for LinearExplainer covering `columns`.
+
+    Stored history has no target-hour weather columns — those only exist once a
+    row is paired with a horizon. For background purposes the weather at t+H is
+    drawn from the same distribution as the weather at t, so each row's own
+    observed weather stands in for it. This only sets the expected value SHAP
+    measures against; the explained row still uses its real forecast values.
+    """
+    frame = background_df.copy()
+    for column in TARGET_WEATHER_COLUMNS:
+        name = target_weather_column_name(column, horizon)
+        if name in columns and name not in frame.columns and column in frame.columns:
+            frame[name] = frame[column]
+
+    available = [c for c in columns if c in frame.columns]
+    if len(available) != len(columns):
+        return pd.DataFrame()
+    return frame[columns].dropna()
+
+
 def _shap_sentence(feature: str, value, contribution: float) -> str:
     """One plain-language line: what this feature was, and which way it pushed."""
     direction = "raised" if contribution >= 0 else "lowered"
-    label = SHAP_PLAIN_NAMES.get(feature, feature)
-    unit = FEATURE_UNITS.get(feature, "")
-    shown = _format_value(feature, value)
+    label = _plain_name(feature)
+    unit = _target_weather_unit(feature)
+    shown = _format_value(_split_target_weather(feature)[0], value)
 
     # Don't append "AQI" to a value whose label already says AQI ("Current AQI
     # was 62 AQI"), and drop the unit entirely for a missing value.
@@ -559,7 +617,12 @@ def render_shap_panel(
         unsafe_allow_html=True,
     )
 
-    X = feature_row[FEATURE_COLUMNS]
+    # Explain exactly the columns this model was fitted on, which differ by
+    # horizon (each carries its own target-hour weather) and by vintage (models
+    # registered before those features existed have only the shared columns).
+    columns = model_feature_columns(model, horizon_days * 24)
+    X = feature_row[columns]
+
     if isinstance(model, (RandomForestRegressor, XGBRegressor)):
         explainer = shap.TreeExplainer(model)
     elif isinstance(model, Ridge):
@@ -567,7 +630,10 @@ def render_shap_panel(
         # value against - passing the single row being explained as its own
         # background (the previous bug here) makes every SHAP value exactly 0,
         # since there's nothing to attribute the difference to.
-        background = background_df[FEATURE_COLUMNS].dropna()
+        background = _shap_background(background_df, columns, horizon_days * 24)
+        if background.empty:
+            st.info("Not enough recent history to explain this prediction yet.")
+            return
         explainer = shap.LinearExplainer(model, background)
     elif isinstance(model, PersistenceRegressor):
         st.info(
@@ -581,7 +647,7 @@ def render_shap_panel(
         return
 
     shap_values = explainer.shap_values(X)
-    contributions = pd.Series(shap_values[0], index=FEATURE_COLUMNS)
+    contributions = pd.Series(shap_values[0], index=columns)
     values = X.iloc[0]
 
     # --- the plain-language version, first ---------------------------------
@@ -616,7 +682,7 @@ def render_shap_panel(
     fig = go.Figure(
         go.Bar(
             x=ordered.values,
-            y=[SHAP_PLAIN_NAMES.get(f, f) for f in ordered.index],
+            y=[_plain_name(f) for f in ordered.index],
             orientation="h",
             marker_color=[
                 theme.MAGENTA if v >= 0 else theme.NAVY_SOFT for v in ordered.values
@@ -646,9 +712,10 @@ def render_shap_panel(
         )
 
     with st.expander("What do these feature names mean?"):
-        for col in FEATURE_COLUMNS:
-            label = SHAP_PLAIN_NAMES.get(col, col)
-            st.markdown(f"- **{label}** (`{col}`) — {FEATURE_DESCRIPTIONS.get(col, '')}")
+        for col in columns:
+            st.markdown(
+                f"- **{_plain_name(col)}** (`{col}`) — {_feature_description(col)}"
+            )
 
 
 def render_copilot(get_readings, get_forecast, get_metrics, get_models, default_city):
@@ -828,6 +895,41 @@ def render_manual_prediction_form(models: dict):
             key=history_keys[3], help=FEATURE_DESCRIPTIONS["aqi_lag_48h"],
         )
 
+    # Models trained after target-hour weather was added also need the forecast
+    # weather for the day being predicted. Older registered models don't, so
+    # this section only appears when the selected model actually uses it.
+    target_columns = [
+        c for c in model_feature_columns(models[horizon_hours], horizon_hours)
+        if _split_target_weather(c)[1] is not None
+    ]
+    target_values = {}
+    if target_columns:
+        st.subheader(f"Forecast weather {horizon_choice} day"
+                     f"{'s' if horizon_choice > 1 else ''} from now")
+        st.markdown(
+            '<div class="aqi-caption">The model also uses what the weather is '
+            "expected to be at the hour it is predicting. These start matching the "
+            "current weather above; change them to explore a different forecast.</div>",
+            unsafe_allow_html=True,
+        )
+        defaults = {
+            "temperature_2m": temperature_2m,
+            "relative_humidity_2m": relative_humidity_2m,
+            "surface_pressure": surface_pressure,
+            "wind_speed_10m": wind_speed_10m,
+        }
+        cols = st.columns(2)
+        for i, column in enumerate(target_columns):
+            base, _ = _split_target_weather(column)
+            with cols[i % 2]:
+                target_values[column] = st.number_input(
+                    f"{SHAP_PLAIN_NAMES.get(base, base)} then"
+                    f" ({FEATURE_UNITS.get(base, '')})",
+                    value=float(defaults.get(base, 0.0)),
+                    step=0.5,
+                    key=f"manual_target_{column}",
+                )
+
     if st.button("Predict AQI", type="primary"):
         row = pd.DataFrame([{
             "pm10": pm10,
@@ -851,9 +953,11 @@ def render_manual_prediction_form(models: dict):
             "aqi_roll_mean_24h": aqi_roll_mean_24h,
             "aqi_lag_24h": aqi_lag_24h,
             "aqi_lag_48h": aqi_lag_48h,
-        }])[FEATURE_COLUMNS]
+            **target_values,
+        }])
 
         model = models[horizon_hours]
+        row = row[model_feature_columns(model, horizon_hours)]
         predicted = float(model.predict(row)[0])
         label, color = _aqi_category(predicted)
 

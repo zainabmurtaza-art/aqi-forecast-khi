@@ -31,6 +31,7 @@ from hopsworks_utils import get_model_registry, reset_project, retry_on_transien
 from training_pipeline.build_dataset import (
     build_training_data,
     chronological_train_test_split,
+    feature_columns,
     target_column_name,
 )
 from training_pipeline.evaluate import evaluate
@@ -147,7 +148,7 @@ def run_training():
             attempted += 1
             try:
                 X_train, y_train, X_test, y_test = chronological_train_test_split(
-                    df, target_col, city
+                    df, target_col, city, feature_cols=feature_columns(horizon)
                 )
 
                 if len(X_train) < 10 or len(X_test) < 3:
