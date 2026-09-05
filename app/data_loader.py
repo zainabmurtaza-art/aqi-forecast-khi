@@ -71,6 +71,27 @@ def algorithm_label(model) -> str:
     return ALGORITHM_LABELS.get(type(model).__name__, type(model).__name__)
 
 
+def latest_registered_model(registry, name):
+    """Highest version of `name` in the registry.
+
+    Deliberately NOT get_best_model(name, "rmse", "min"). Every nightly run
+    registers a new version, and each version's RMSE is measured on its own
+    chronological hold-out — a different, growing slice of history. Those
+    numbers are not comparable across versions: a model trained on 2026-08-11,
+    when the feature store held only a few days and its test window barely
+    moved, scored RMSE 7.65 and won permanently, while 34 later versions
+    trained on a full year of data were never served (that version's R2 was
+    -0.935, the worst of all of them).
+
+    The newest version is the one trained on the most complete data, so that is
+    what gets served.
+    """
+    versions = registry.get_models(name)
+    if not versions:
+        raise ValueError(f"No registered model versions for '{name}'.")
+    return max(versions, key=lambda m: m.version)
+
+
 @st.cache_resource
 def load_models(city: str) -> dict:
     """Returns {horizon_hours: fitted sklearn model} for each configured horizon, for one city."""
@@ -79,7 +100,7 @@ def load_models(city: str) -> dict:
 
     for horizon in config.FORECAST_HORIZONS_HOURS:
         name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(city=city, horizon=horizon // 24)
-        hw_model = registry.get_best_model(name, "rmse", "min")
+        hw_model = latest_registered_model(registry, name)
         model_dir = hw_model.download()
         models[horizon] = joblib.load(Path(model_dir) / "model.pkl")
 
@@ -99,7 +120,7 @@ def load_model_metrics(city: str) -> pd.DataFrame:
     for horizon in config.FORECAST_HORIZONS_HOURS:
         name = config.MODEL_REGISTRY_NAME_TEMPLATE.format(city=city, horizon=horizon // 24)
         try:
-            hw_model = registry.get_best_model(name, "rmse", "min")
+            hw_model = latest_registered_model(registry, name)
         except Exception:
             continue
 
