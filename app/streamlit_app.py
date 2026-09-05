@@ -5,6 +5,9 @@ AQI forecast dashboard. Run locally with:
 
 Deployed on Streamlit Community Cloud pointing at this same file, with
 HOPSWORKS_API_KEY set under the app's own Settings -> Secrets.
+
+Each view is a function in VIEW_FUNCTIONS, rendered into a single slot so the
+body can be cleared on navigation — see the note above `body` at the bottom.
 """
 
 import sys
@@ -26,7 +29,6 @@ from app.data_loader import (
     load_recent_actual_features,
 )
 from app.ui_components import (
-    render_aqi_key,
     render_alert_banner,
     render_copilot,
     render_current_readings,
@@ -41,17 +43,16 @@ from app.ui_components import (
 st.set_page_config(page_title="AQI Forecast — Pakistan", layout="wide")
 theme.apply_theme()
 
-view = st.sidebar.radio(
-    "View",
-    [
-        "Current Readings",
-        "Forecast",
-        "Model & Explanation",
-        "Manual Prediction",
-        "Health & AQI Key",
-        "AQI Copilot",
-    ],
-)
+VIEWS = [
+    "Current Readings",
+    "Forecast",
+    "Model & Explanation",
+    "Manual Prediction",
+    "Health & AQI Key",
+    "AQI Copilot",
+]
+
+view = st.sidebar.radio("View", VIEWS)
 
 city_keys = list(config.CITIES.keys())
 default_city = config.CITY_NAME if config.CITY_NAME in config.CITIES else city_keys[0]
@@ -64,7 +65,25 @@ selected_city = st.sidebar.selectbox(
 )
 city_label = config.CITIES[selected_city]["label"]
 
-if view == "Current Readings":
+
+def _no_models_error():
+    st.error(
+        f"No trained models found in Hopsworks yet for {city_label}. Run "
+        "`python -m feature_pipeline.backfill_pipeline` and "
+        "`python -m training_pipeline.train` first."
+    )
+    st.stop()
+
+
+def _no_features_error():
+    st.error(
+        f"No feature data found in Hopsworks yet for {city_label}. Run "
+        "`python -m feature_pipeline.backfill_pipeline` first."
+    )
+    st.stop()
+
+
+def view_current_readings():
     st.title(f"Current Readings — {city_label}")
     st.markdown(
         '<div class="aqi-caption">Today&rsquo;s air quality alongside every '
@@ -85,16 +104,12 @@ if view == "Current Readings":
             st.stop()
 
     if readings_df.empty:
-        st.error(
-            f"No feature data found in Hopsworks yet for {city_label}. Run "
-            "`python -m feature_pipeline.backfill_pipeline` first."
-        )
-        st.stop()
+        _no_features_error()
 
     render_current_readings(readings_df, city_label)
-    st.stop()
 
-if view == "Health & AQI Key":
+
+def view_health_and_key():
     st.title("Health Guidance & AQI Key")
     st.markdown(
         '<div class="aqi-caption">What today&rsquo;s air quality means for different '
@@ -103,7 +118,7 @@ if view == "Health & AQI Key":
         unsafe_allow_html=True,
     )
     # Current AQI is a nicety here, not a requirement — the band-by-band guidance
-    # and the colour key are still worth showing if the feature store is down.
+    # is still worth showing if the feature store is down.
     current_aqi = None
     try:
         readings_df = load_recent_actual_features(selected_city)
@@ -115,13 +130,13 @@ if view == "Health & AQI Key":
             "without today's status."
         )
 
+    # The band-by-band cards inside render_health_guidelines already carry each
+    # category's colour and range, so the standalone colour key that used to sit
+    # below them was showing the same information twice.
     render_health_guidelines(current_aqi, city_label)
-    st.divider()
-    st.subheader("Colour key")
-    render_aqi_key()
-    st.stop()
 
-if view == "AQI Copilot":
+
+def view_copilot():
     st.title("AQI Copilot")
     render_copilot(
         get_readings=load_recent_actual_features,
@@ -130,9 +145,9 @@ if view == "AQI Copilot":
         get_models=load_models,
         default_city=selected_city,
     )
-    st.stop()
 
-if view == "Model & Explanation":
+
+def view_model_and_explanation():
     st.title(f"Model & Explanation — {city_label}")
     st.markdown(
         '<div class="aqi-caption">Which model is producing each forecast, how '
@@ -144,12 +159,7 @@ if view == "Model & Explanation":
             models = load_models(selected_city)
             metrics_df = load_model_metrics(selected_city)
         except Exception:
-            st.error(
-                f"No trained models found in Hopsworks yet for {city_label}. Run "
-                "`python -m feature_pipeline.backfill_pipeline` and "
-                "`python -m training_pipeline.train` first."
-            )
-            st.stop()
+            _no_models_error()
 
     render_model_metrics(models, metrics_df, city_label)
 
@@ -175,77 +185,88 @@ if view == "Model & Explanation":
     render_shap_panel(
         models[horizon_choice * 24], selected["feature_row"], horizon_choice, actual_df
     )
-    st.stop()
 
-if view == "Manual Prediction":
+
+def view_manual_prediction():
     st.title(f"Manual AQI Prediction — {city_label}")
     with st.spinner(f"Loading models for {city_label}..."):
         try:
             models = load_models(selected_city)
         except Exception:
+            _no_models_error()
+    render_manual_prediction_form(models)
+
+
+def view_forecast():
+    st.title(f"Air Quality Forecast — {city_label}")
+    st.markdown(
+        '<div class="aqi-caption">Three-day US AQI outlook, with the recent trend '
+        "behind it. See <strong>Current Readings</strong> for today&rsquo;s full "
+        "feature detail.</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner(f"Loading models and latest data for {city_label}..."):
+        try:
+            models = load_models(selected_city)
+        except Exception:
+            _no_models_error()
+
+        actual_df = load_recent_actual_features(selected_city)
+
+        try:
+            predictions = get_horizon_predictions(models, selected_city)
+        except Exception:
             st.error(
-                f"No trained models found in Hopsworks yet for {city_label}. Run "
-                "`python -m feature_pipeline.backfill_pipeline` and "
-                "`python -m training_pipeline.train` first."
+                "Couldn't reach Open-Meteo for the live forecast right now (likely a "
+                "temporary rate limit) even after retrying with backoff. Please reload "
+                "in a minute or two."
             )
             st.stop()
-    render_manual_prediction_form(models)
-    st.stop()
 
-st.title(f"Air Quality Forecast — {city_label}")
-st.markdown(
-    '<div class="aqi-caption">Three-day US AQI outlook, with the recent trend '
-    "behind it. See <strong>Current Readings</strong> for today&rsquo;s full "
-    "feature detail.</div>",
-    unsafe_allow_html=True,
-)
+    if actual_df.empty:
+        _no_features_error()
 
-with st.spinner(f"Loading models and latest data for {city_label}..."):
-    try:
-        models = load_models(selected_city)
-    except Exception:
-        st.error(
-            f"No trained models found in Hopsworks yet for {city_label}. Run "
-            "`python -m feature_pipeline.backfill_pipeline` and "
-            "`python -m training_pipeline.train` first."
-        )
-        st.stop()
+    render_alert_banner(float(actual_df["us_aqi"].iloc[-1]), predictions)
 
-    actual_df = load_recent_actual_features(selected_city)
+    col1, col2 = st.columns(2)
+    with col1:
+        render_forecast_chart(predictions)
+    with col2:
+        render_trend_chart(actual_df)
 
-    try:
-        predictions = get_horizon_predictions(models, selected_city)
-    except Exception:
-        st.error(
-            "Couldn't reach Open-Meteo for the live forecast right now (likely a "
-            "temporary rate limit) even after retrying with backoff. Please reload "
-            "in a minute or two."
-        )
-        st.stop()
+    st.divider()
 
-if actual_df.empty:
-    st.error(
-        f"No feature data found in Hopsworks yet for {city_label}. Run "
-        "`python -m feature_pipeline.backfill_pipeline` first."
+    st.markdown(
+        '<div class="aqi-caption">Want to know why these numbers came out the way they '
+        "did, or how accurate the model has been? See <strong>Model &amp; "
+        "Explanation</strong>. For what today&rsquo;s air quality means for you, see "
+        "<strong>Health &amp; AQI Key</strong>.</div>",
+        unsafe_allow_html=True,
     )
-    st.stop()
 
-current_aqi = float(actual_df["us_aqi"].iloc[-1])
 
-render_alert_banner(current_aqi, predictions)
+VIEW_FUNCTIONS = {
+    "Current Readings": view_current_readings,
+    "Forecast": view_forecast,
+    "Model & Explanation": view_model_and_explanation,
+    "Manual Prediction": view_manual_prediction,
+    "Health & AQI Key": view_health_and_key,
+    "AQI Copilot": view_copilot,
+}
 
-col1, col2 = st.columns(2)
-with col1:
-    render_forecast_chart(predictions)
-with col2:
-    render_trend_chart(actual_df)
+# Streamlit leaves the previous run's elements on screen until new ones replace
+# them, position by position. A page that loads slowly therefore draws its own
+# title first and leaves the *previous* page's body sitting underneath the
+# spinner — visibly, the Forecast banner showing through "Loading models for
+# Karachi...". Holding the whole body in a single slot lets it be cleared the
+# moment the selection changes, before any slow work starts, so the reader sees
+# an empty panel and a spinner instead of two pages overlapping.
+body = st.empty()
+selection = (view, selected_city)
+if st.session_state.get("_rendered_selection") != selection:
+    body.empty()
+    st.session_state["_rendered_selection"] = selection
 
-st.divider()
-
-st.markdown(
-    '<div class="aqi-caption">Want to know why these numbers came out the way they '
-    "did, or how accurate the model has been? See <strong>Model &amp; "
-    "Explanation</strong>. For what today&rsquo;s air quality means for you, see "
-    "<strong>Health &amp; AQI Key</strong>.</div>",
-    unsafe_allow_html=True,
-)
+with body.container():
+    VIEW_FUNCTIONS[view]()

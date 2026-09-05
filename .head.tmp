@@ -1,0 +1,40 @@
+# -*- coding: utf-8 -*-
+"""
+AQI forecast dashboard. Run locally with:
+    streamlit run app/streamlit_app.py
+
+Deployed on Streamlit Community Cloud pointing at this same file, with
+HOPSWORKS_API_KEY set under the app's own Settings -> Secrets.
+"""
+
+import sys
+from pathlib import Path
+
+# Streamlit Cloud runs this file with only its own directory (app/) on
+# sys.path, not the project root - add the root explicitly so config.py,
+# hopsworks_utils.py, feature_pipeline/, and training_pipeline/ are importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import streamlit as st
+
+import config
+from app import theme
+from app.data_loader import (
+    get_horizon_predictions,
+    load_model_metrics,
+    load_models,
+    load_recent_actual_features,
+)
+from app.ui_components import (
+    render_aqi_key,
+    render_alert_banner,
+    render_copilot,
+    render_current_readings,
+    render_forecast_chart,
+    render_health_guidelines,
+    render_manual_prediction_form,
+    render_model_metrics,
+    render_shap_panel,
+    render_trend_chart,
+)
+

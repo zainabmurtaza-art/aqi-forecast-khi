@@ -28,6 +28,11 @@ MUTED = "#6B6350"        # captions, units, helper text
 
 SERIF_STACK = '"Times New Roman", Times, Georgia, "Nimbus Roman", serif'
 
+# Streamlit's body default is 14px; 1.5pt is 2px, so body copy sits at 16px.
+# The card/reading sizes below are expressed against this so they scale with it
+# rather than drifting out of proportion.
+BODY_FONT_PX = 16
+
 
 def _css() -> str:
     return f"""
@@ -43,6 +48,17 @@ def _css() -> str:
     .stApp span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
     .stMarkdown, button, input, select, textarea {{
         font-family: {SERIF_STACK} !important;
+    }}
+
+    /* Body copy runs 1.5pt (2px) larger than Streamlit's 14px default, which
+       a serif at this size needs to stay comfortable. Headings keep their own
+       sizes below; icon spans are excluded so glyph metrics aren't disturbed. */
+    .stApp p, .stApp li, .stApp label,
+    .stApp .stMarkdown, .stApp .stMarkdown p, .stApp .stMarkdown li,
+    .stApp [data-testid="stMarkdownContainer"] p,
+    .stApp [data-testid="stMarkdownContainer"] li,
+    .stApp input, .stApp textarea, .stApp button {{
+        font-size: {BODY_FONT_PX}px;
     }}
     .stApp {{
         background-color: {CREAM};
@@ -64,14 +80,12 @@ def _css() -> str:
     .stApp h3 {{ font-size: 1.2rem; }}
 
     /* Streamlit draws its chrome icons (sidebar collapse, expander arrows,
-       alert glyphs) as Material Symbols *ligatures* — the glyph only appears
-       because the icon font maps the literal text. The blanket serif rule
-       above would otherwise render them as the words themselves, e.g. a
-       stray "keyboard_double_arrow_left" above the sidebar, so the icon font
-       is restored here at higher specificity. */
-       The :not() exclusions in the rule above keep our serif off them; this
-       is the belt-and-braces fallback in case a future Streamlit build stops
-       setting the family itself. */
+       alert glyphs) as Material Symbols ligatures — the glyph only appears
+       because the icon font maps the literal text, so anything that changes
+       their font renders the word instead ("keyboard_double_arrow_left").
+       The :not() exclusions in the typography rule above keep our serif off
+       them; this is the belt-and-braces fallback in case a future Streamlit
+       build stops setting the family itself. */
     .stApp span[data-testid="stIconMaterial"],
     section[data-testid="stSidebar"] span[data-testid="stIconMaterial"] {{
         font-family: "Material Symbols Rounded", "Material Symbols Outlined",
@@ -119,7 +133,7 @@ def _css() -> str:
         box-shadow: 0 1px 3px rgba(27, 42, 74, 0.07);
     }}
     .aqi-card-title {{
-        font-size: 0.78rem;
+        font-size: 0.85rem;
         font-weight: 700;
         letter-spacing: 0.13em;
         text-transform: uppercase;
@@ -147,17 +161,17 @@ def _css() -> str:
     }}
     .reading-label {{
         color: {NAVY};
-        font-size: 0.95rem;
+        font-size: 1.05rem;
     }}
     .reading-value {{
         color: {MAGENTA};
-        font-size: 1.06rem;
+        font-size: 1.16rem;
         font-weight: 700;
         white-space: nowrap;
     }}
     .reading-unit {{
         color: {MUTED};
-        font-size: 0.82rem;
+        font-size: 0.9rem;
         font-weight: 400;
         margin-left: 0.15rem;
     }}
@@ -181,17 +195,17 @@ def _css() -> str:
         line-height: 1;
     }}
     .aqi-hero-label {{
-        font-size: 0.76rem;
+        font-size: 0.84rem;
         letter-spacing: 0.15em;
         text-transform: uppercase;
         opacity: 0.9;
     }}
     .aqi-hero-category {{
-        font-size: 1.35rem;
+        font-size: 1.45rem;
         font-weight: 700;
     }}
     .aqi-hero-meta {{
-        font-size: 0.9rem;
+        font-size: 0.98rem;
         opacity: 0.93;
         text-align: right;
     }}
@@ -200,7 +214,7 @@ def _css() -> str:
     hr, [data-testid="stDivider"] {{ border-color: {BORDER} !important; }}
     .aqi-caption {{
         color: {MUTED};
-        font-size: 0.88rem;
+        font-size: 0.97rem;
         font-style: italic;
         margin: 0.15rem 0 0.9rem 0;
     }}

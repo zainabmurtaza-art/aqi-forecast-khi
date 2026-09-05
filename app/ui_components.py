@@ -144,19 +144,9 @@ def _format_value(column: str, value) -> str:
     return f"{float(value):.1f}"
 
 
-def render_aqi_key():
-    """Static US AQI color/range legend, shown instead of the forecast charts
-    when the sidebar is set to the 'AQI Key' view."""
-    rows = "".join(
-        f'<div style="background-color:{color}; padding:0.85rem 1.1rem; '
-        f'border-radius:5px; color:white; margin-bottom:0.5rem; '
-        f'display:flex; justify-content:space-between; align-items:baseline;">'
-        f'<strong style="font-size:1.05rem;">{label}</strong>'
-        f'<span style="opacity:0.92;">{lo}&ndash;{hi}</span>'
-        f"</div>"
-        for lo, hi, label, color in AQI_KEY_RANGES
-    )
-    st.markdown(theme.card("US AQI categories", rows), unsafe_allow_html=True)
+# A standalone colour-key panel used to live here. render_health_guidelines()
+# below already prints every category as a colour-coded card carrying its own
+# AQI range, so the separate key was showing the same bands twice on one page.
 
 
 def render_health_guidelines(current_aqi=None, city_label: str = ""):
