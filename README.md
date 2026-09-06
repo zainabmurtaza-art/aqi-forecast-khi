@@ -95,3 +95,9 @@ secrets).
 - `app/` — Streamlit dashboard.
 - `notebooks/eda.ipynb` — exploratory analysis on backfilled data.
 - `legacy/` — original prototype script, kept for reference.
+
+## Hopswork Model Registry
+- https://eu-west.cloud.hopsworks.ai/p/42190/view
+
+## App
+- https://aqi-forecast-khi-75n7bjlc2t48wxqghyyea4.streamlit.app/
